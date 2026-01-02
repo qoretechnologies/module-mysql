@@ -4,7 +4,6 @@ stages:
 default:
   tags:
     - k8s
-    - amd64
   services:
     - name: mariadb:lts
       alias: mysql

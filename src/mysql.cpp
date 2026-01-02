@@ -6,7 +6,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2020 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2025 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -337,9 +337,9 @@ void MyResult::setupColumns(QoreHashNode& h) {
       assign_column_value(tstr, enc, field[i].name, h, new QoreListNode);
 }
 
-void MyResult::bind(MYSQL_STMT *stmt) {
+int MyResult::bind(MYSQL_STMT *stmt) {
     if (bindbuf)
-        return;
+        return 0;
 
     bindbuf = new MYSQL_BIND[num_fields];
     bi      = new bindInfo[num_fields];
@@ -404,8 +404,11 @@ void MyResult::bind(MYSQL_STMT *stmt) {
         bindbuf[i].length = &bi[i].mlen;
     }
 
-    // FIXME: check for errors here
-    mysql_stmt_bind_result(stmt, bindbuf);
+    if (mysql_stmt_bind_result(stmt, bindbuf)) {
+        // return error code; caller should check mysql_stmt_error() for details
+        return -1;
+    }
+    return 0;
 }
 
 QoreValue MyResult::getBoundColumnValue(int i, bool destructive) {
@@ -784,7 +787,10 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
 
             int rows = mysql_stmt_affected_rows(tmp_stmt);
             if (rows) {
-                tmpres.bind(tmp_stmt);
+                if (tmpres.bind(tmp_stmt)) {
+                    xsink->raiseException("DBI:MYSQL:BIND-ERROR", "error binding result columns: %s", mysql_stmt_error(tmp_stmt));
+                    return nullptr;
+                }
 
                 if (rows > 1) {
                     QoreListNode* l = new QoreListNode(autoTypeInfo);
@@ -880,7 +886,10 @@ QoreValue QoreMysqlBindGroup::exec(ExceptionSink* xsink, bool cols) {
         if (!mysql_stmt_affected_rows(stmt))
             return h.release();
 
-        myres.bind(stmt);
+        if (myres.bind(stmt)) {
+            xsink->raiseException("DBI:MYSQL:BIND-ERROR", "error binding result columns: %s", mysql_stmt_error(stmt));
+            return QoreValue();
+        }
 
         return getDataColumns(**h, xsink, -1, cols) ? QoreValue() : h.release();
     }
@@ -900,7 +909,10 @@ QoreValue QoreMysqlBindGroup::selectRows(ExceptionSink* xsink) {
         if (!mysql_stmt_affected_rows(stmt))
             return l.release();
 
-        myres.bind(stmt);
+        if (myres.bind(stmt)) {
+            xsink->raiseException("DBI:MYSQL:BIND-ERROR", "error binding result columns: %s", mysql_stmt_error(stmt));
+            return QoreValue();
+        }
 
         return getDataRows(**l, xsink) ? QoreValue() : l.release();
     }
@@ -923,7 +935,10 @@ QoreHashNode* QoreMysqlBindGroup::selectRow(ExceptionSink* xsink) {
             return nullptr;
         }
 
-        myres.bind(stmt);
+        if (myres.bind(stmt)) {
+            xsink->raiseException("DBI:MYSQL:BIND-ERROR", "error binding result columns: %s", mysql_stmt_error(stmt));
+            return nullptr;
+        }
 
         QoreString tstr;
         const QoreEncoding* enc = ds->getQoreEncoding();
@@ -1076,8 +1091,12 @@ int QoreMysqlPreparedStatement::bind(const QoreListNode &l, ExceptionSink *xsink
 
 int QoreMysqlPreparedStatement::define(ExceptionSink *xsink) {
    //printd(5, "QoreMysqlPreparedStatement::define() this: %p myres: %d\n", this, (bool)myres);
-   if (myres)
-      myres.bind(stmt);
+   if (myres) {
+      if (myres.bind(stmt)) {
+         xsink->raiseException("DBI:MYSQL:BIND-ERROR", "error binding result columns: %s", mysql_stmt_error(stmt));
+         return -1;
+      }
+   }
    return 0;
 }
 
@@ -1242,7 +1261,7 @@ static int mysql_stmt_api_bind(SQLStatement* stmt, const QoreListNode& l, Except
 }
 
 static int mysql_stmt_api_bind_placeholders(SQLStatement* stmt, const QoreListNode& l, ExceptionSink* xsink) {
-   xsink->raiseException("DBI:PGSQL-BIND-PLACEHHODERS-ERROR", "binding placeholders is not necessary or supported with the pgsql driver");
+   xsink->raiseException("DBI:MYSQL-BIND-PLACEHOLDERS-ERROR", "binding placeholders is not necessary or supported with the mysql driver");
    return -1;
 }
 

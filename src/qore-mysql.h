@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2020 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2025 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -107,7 +107,7 @@ public:
       return (bool)num_fields;
    }
 
-   DLLLOCAL void bind(MYSQL_STMT *stmt);
+   DLLLOCAL int bind(MYSQL_STMT *stmt);
    DLLLOCAL QoreValue getBoundColumnValue(int i, bool destructive = false);
 
    DLLLOCAL char *getFieldName(int i) {
@@ -437,7 +437,7 @@ public:
 
     DLLLOCAL void add(char *name) {
         phl.push_back(name);
-        printd(5, "QoreMysqlBindGroup::add() placeholder '%s' %d %s\n", name);
+        printd(5, "QoreMysqlBindGroup::add() placeholder '%s'\n", name);
         hasOutput = true;
     }
 

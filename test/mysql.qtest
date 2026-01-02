@@ -113,6 +113,17 @@ class MysqlTest inherits QUnit::Test {
         addTestCase("transaction test case", \transactionTests());
         addTestCase("select row test", \selectRowTest());
 
+        # New comprehensive test cases
+        addTestCase("NULL handling test", \nullHandlingTest());
+        addTestCase("boundary values test", \boundaryValuesTest());
+        addTestCase("SQL error test", \sqlErrorTest());
+        addTestCase("prepared statement test", \preparedStatementTest());
+        addTestCase("empty result test", \emptyResultTest());
+        addTestCase("type conversion test", \typeConversionTest());
+        addTestCase("binary data test", \binaryDataTest());
+        addTestCase("number options test", \numberOptionsTest());
+        addTestCase("timezone test", \timezoneTest());
+
         set_return_value(main());
     }
 
@@ -349,5 +360,435 @@ class MysqlTest inherits QUnit::Test {
             db.rollback();
 
         assertThrows("DBI-SELECT-ROW-ERROR", \db.selectRow(), "select * from family");
+    }
+
+    # Test NULL value handling
+    nullHandlingTest() {
+        Datasource db(connstr);
+
+        on_exit {
+            try { db.exec("drop table null_test"); } catch () {}
+            db.commit();
+        }
+
+        # Create table with nullable columns
+        db.exec("create table null_test (
+            id int not null,
+            nullable_int int null,
+            nullable_varchar varchar(100) null,
+            nullable_date date null,
+            nullable_blob blob null
+        )");
+        db.commit();
+
+        # Insert NULL values
+        db.exec("insert into null_test values (1, NULL, NULL, NULL, NULL)");
+        db.exec("insert into null_test values (2, 42, 'test', '2024-01-15', NULL)");
+        db.commit();
+
+        # Test selecting NULL values
+        *hash row = db.selectRow("select * from null_test where id = 1");
+        assertEq(1, row.id);
+        assertEq(NULL, row.nullable_int);
+        assertEq(NULL, row.nullable_varchar);
+        assertEq(NULL, row.nullable_date);
+        assertEq(NULL, row.nullable_blob);
+
+        # Test selecting non-NULL values
+        row = db.selectRow("select * from null_test where id = 2");
+        assertEq(2, row.id);
+        assertEq(42, row.nullable_int);
+        assertEq("test", row.nullable_varchar);
+
+        # Test binding NULL values
+        db.exec("insert into null_test values (3, %v, %v, %v, %v)", NULL, NULL, NULL, NULL);
+        db.commit();
+        row = db.selectRow("select * from null_test where id = 3");
+        assertEq(NULL, row.nullable_int);
+        assertEq(NULL, row.nullable_varchar);
+    }
+
+    # Test boundary values for various data types
+    boundaryValuesTest() {
+        Datasource db(connstr);
+
+        on_exit {
+            try { db.exec("drop table boundary_test"); } catch () {}
+            db.commit();
+        }
+
+        # Create table for boundary testing
+        db.exec("create table boundary_test (
+            id int not null,
+            tiny_val tinyint,
+            small_val smallint,
+            int_val int,
+            big_val bigint,
+            float_val float,
+            double_val double,
+            decimal_val decimal(20,5),
+            varchar_val varchar(255),
+            text_val text
+        )");
+        db.commit();
+
+        # Test BIGINT boundaries
+        int bigint_max = 9223372036854775807;
+        int bigint_min = -9223372036854775807;  # Use -max to avoid overflow
+        db.exec("insert into boundary_test (id, big_val) values (1, %v)", bigint_max);
+        db.exec("insert into boundary_test (id, big_val) values (2, %v)", bigint_min);
+        db.commit();
+
+        *hash row = db.selectRow("select big_val from boundary_test where id = 1");
+        assertEq(bigint_max, row.big_val);
+        row = db.selectRow("select big_val from boundary_test where id = 2");
+        assertEq(bigint_min, row.big_val);
+
+        # Test TINYINT boundaries
+        db.exec("insert into boundary_test (id, tiny_val) values (3, 127)");
+        db.exec("insert into boundary_test (id, tiny_val) values (4, -128)");
+        db.commit();
+
+        row = db.selectRow("select tiny_val from boundary_test where id = 3");
+        assertEq(127, row.tiny_val);
+        row = db.selectRow("select tiny_val from boundary_test where id = 4");
+        assertEq(-128, row.tiny_val);
+
+        # Test empty string
+        db.exec("insert into boundary_test (id, varchar_val) values (5, '')");
+        db.commit();
+        row = db.selectRow("select varchar_val from boundary_test where id = 5");
+        assertEq("", row.varchar_val);
+
+        # Test long text
+        string long_text = strmul("x", 10000);
+        db.exec("insert into boundary_test (id, text_val) values (6, %v)", long_text);
+        db.commit();
+        row = db.selectRow("select text_val from boundary_test where id = 6");
+        assertEq(long_text, row.text_val);
+    }
+
+    # Test SQL error handling
+    sqlErrorTest() {
+        Datasource db(connstr);
+
+        on_exit
+            db.rollback();
+
+        # Test syntax error - can throw various DBI:MYSQL exceptions
+        bool got_error = False;
+        try {
+            db.exec("SELEC * FROM nonexistent");
+        } catch (hash<auto> ex) {
+            got_error = True;
+            assertTrue(ex.err =~ /DBI:MYSQL/);
+        }
+        assertTrue(got_error);
+
+        # Test table not found
+        got_error = False;
+        try {
+            db.exec("select * from table_that_does_not_exist_xyz");
+        } catch (hash<auto> ex) {
+            got_error = True;
+            assertTrue(ex.err =~ /DBI:MYSQL/);
+        }
+        assertTrue(got_error);
+
+        # Test constraint violation - duplicate key
+        got_error = False;
+        try {
+            db.exec("create table dup_test (id int primary key)");
+            db.exec("insert into dup_test values (1)");
+            db.exec("insert into dup_test values (1)");  # duplicate
+        } catch (hash<auto> ex) {
+            got_error = True;
+            assertTrue(ex.err =~ /DBI:MYSQL/);
+        }
+        assertTrue(got_error);
+        db.rollback();
+        try { db.exec("drop table dup_test"); } catch () {}
+        db.commit();
+
+        # Test invalid column reference
+        got_error = False;
+        try {
+            db.select("select nonexistent_column from family");
+        } catch (hash<auto> ex) {
+            got_error = True;
+            assertTrue(ex.err =~ /DBI:MYSQL/);
+        }
+        assertTrue(got_error);
+    }
+
+    # Test prepared statement operations
+    preparedStatementTest() {
+        Datasource db(connstr);
+
+        on_exit {
+            try { db.exec("drop table stmt_test"); } catch () {}
+            db.commit();
+        }
+
+        db.exec("create table stmt_test (id int, name varchar(100), value decimal(10,2))");
+        db.commit();
+
+        # Test SQLStatement basic usage
+        SQLStatement stmt(db);
+        stmt.prepare("insert into stmt_test values (%v, %v, %v)");
+
+        stmt.bind(1, "first", 10.50);
+        stmt.exec();
+        stmt.commit();
+
+        # Re-bind and execute with different values
+        stmt.bind(2, "second", 20.75);
+        stmt.exec();
+        stmt.commit();
+
+        # Verify data
+        *list rows = db.selectRows("select * from stmt_test order by id");
+        assertEq(2, rows.size());
+        assertEq(1, rows[0].id);
+        assertEq("first", rows[0].name);
+        assertEq(2, rows[1].id);
+        assertEq("second", rows[1].name);
+
+        # Test select with prepared statement
+        SQLStatement sel_stmt(db);
+        sel_stmt.prepare("select * from stmt_test where id = %v");
+        sel_stmt.bind(1);
+        sel_stmt.exec();
+        assertTrue(sel_stmt.next());
+        *hash row = sel_stmt.fetchRow();
+        assertEq("first", row.name);
+        sel_stmt.commit();
+
+        # Test affected rows
+        SQLStatement upd_stmt(db);
+        upd_stmt.prepare("update stmt_test set name = %v where id > 0");
+        upd_stmt.bind("updated");
+        upd_stmt.exec();
+        assertEq(2, upd_stmt.affectedRows());
+        upd_stmt.commit();
+    }
+
+    # Test empty result set handling
+    emptyResultTest() {
+        Datasource db(connstr);
+
+        on_exit
+            db.rollback();
+
+        # Test selectRow with no results - should return NOTHING
+        *hash row = db.selectRow("select * from family where family_id = 9999");
+        assertNothing(row);
+
+        # Test selectRows with no results
+        *list rows = db.selectRows("select * from family where family_id = 9999");
+        assertEq((), rows);
+
+        # Test select with no results
+        hash result = db.select("select * from family where family_id = 9999");
+        assertEq(0, result.family_id.size());
+        assertEq(0, result.name.size());
+
+        # Test SQLStatement with empty result
+        SQLStatement stmt(db);
+        stmt.prepare("select * from family where family_id = 9999");
+        stmt.exec();
+        assertFalse(stmt.next());
+        stmt.commit();
+    }
+
+    # Test type conversion for various MySQL types
+    typeConversionTest() {
+        Datasource db(connstr);
+
+        on_exit {
+            try { db.exec("drop table type_test"); } catch () {}
+            db.commit();
+        }
+
+        db.exec("create table type_test (
+            id int not null,
+            bool_val tinyint(1),
+            year_val year,
+            time_val time,
+            enum_val enum('one', 'two', 'three'),
+            set_val set('a', 'b', 'c')
+        )");
+        db.commit();
+
+        # Test boolean binding
+        db.exec("insert into type_test (id, bool_val) values (1, %v)", True);
+        db.exec("insert into type_test (id, bool_val) values (2, %v)", False);
+        db.commit();
+
+        *hash row = db.selectRow("select bool_val from type_test where id = 1");
+        assertEq(1, row.bool_val);
+        row = db.selectRow("select bool_val from type_test where id = 2");
+        assertEq(0, row.bool_val);
+
+        # Test YEAR type
+        db.exec("insert into type_test (id, year_val) values (3, 2024)");
+        db.commit();
+        row = db.selectRow("select year_val from type_test where id = 3");
+        assertEq(2024, row.year_val);
+
+        # Test TIME type
+        db.exec("insert into type_test (id, time_val) values (4, '14:30:45')");
+        db.commit();
+        row = db.selectRow("select time_val from type_test where id = 4");
+        # TIME values should have date set to 1970-01-01
+        assertEq(14, get_hours(row.time_val));
+        assertEq(30, get_minutes(row.time_val));
+        assertEq(45, get_seconds(row.time_val));
+
+        # Test ENUM type
+        db.exec("insert into type_test (id, enum_val) values (5, 'two')");
+        db.commit();
+        row = db.selectRow("select enum_val from type_test where id = 5");
+        assertEq("two", row.enum_val);
+
+        # Test SET type
+        db.exec("insert into type_test (id, set_val) values (6, 'a,c')");
+        db.commit();
+        row = db.selectRow("select set_val from type_test where id = 6");
+        assertEq("a,c", row.set_val);
+    }
+
+    # Test binary data handling
+    binaryDataTest() {
+        Datasource db(connstr);
+
+        on_exit {
+            try { db.exec("drop table binary_test"); } catch () {}
+            db.commit();
+        }
+
+        db.exec("create table binary_test (
+            id int not null,
+            bin_data blob,
+            vbin_data varbinary(255)
+        )");
+        db.commit();
+
+        # Test binary data with various content
+        binary test_bin = <deadbeef>;
+        db.exec("insert into binary_test (id, bin_data, vbin_data) values (1, %v, %v)", test_bin, test_bin);
+        db.commit();
+
+        *hash row = db.selectRow("select * from binary_test where id = 1");
+        assertEq(test_bin, row.vbin_data);
+
+        # Test empty binary
+        binary empty_bin = binary();
+        db.exec("insert into binary_test (id, bin_data) values (2, %v)", empty_bin);
+        db.commit();
+
+        row = db.selectRow("select bin_data from binary_test where id = 2");
+        # Empty binary should be NULL or empty: verify the column exists in result
+        assertTrue(row.hasKey("bin_data"));
+        # If not NULL, should be empty
+        if (exists row.bin_data) {
+            assertEq(0, row.bin_data.size());
+        }
+
+        # Test larger binary data
+        binary large_bin = binary(strmul("X", 1000));
+        db.exec("insert into binary_test (id, bin_data) values (3, %v)", large_bin);
+        db.commit();
+
+        row = db.selectRow("select bin_data from binary_test where id = 3");
+        assertEq(large_bin.size(), row.bin_data.size());
+    }
+
+    # Test number option handling
+    numberOptionsTest() {
+        Datasource db(connstr);
+        db.open();
+
+        on_exit {
+            try { db.exec("drop table number_test"); } catch () {}
+            db.commit();
+        }
+
+        db.exec("create table number_test (
+            id int not null,
+            dec_val decimal(20,5),
+            num_val numeric(15,3)
+        )");
+        db.commit();
+
+        # Insert test data
+        db.exec("insert into number_test values (1, 123456789.12345, 9999999.999)");
+        db.commit();
+
+        # Test optimal-numbers (default)
+        db.setOption("optimal-numbers", True);
+        *hash row = db.selectRow("select * from number_test where id = 1");
+        # With optimal-numbers, non-integer decimals should be returned as number type
+        assertTrue(exists row.dec_val);
+
+        # Test string-numbers - verify the option works without breaking
+        db.setOption("string-numbers", True);
+        row = db.selectRow("select * from number_test where id = 1");
+        assertTrue(exists row.dec_val);
+        assertTrue(exists row.num_val);
+
+        # Test numeric-numbers
+        db.setOption("numeric-numbers", True);
+        row = db.selectRow("select * from number_test where id = 1");
+        assertTrue(exists row.dec_val);
+        assertTrue(exists row.num_val);
+
+        # Reset to optimal
+        db.setOption("optimal-numbers", True);
+    }
+
+    # Test timezone handling
+    timezoneTest() {
+        Datasource db(connstr);
+        db.open();
+
+        on_exit {
+            try { db.exec("drop table tz_test"); } catch () {}
+            db.commit();
+        }
+
+        db.exec("create table tz_test (
+            id int not null,
+            dt datetime,
+            ts timestamp
+        )");
+        db.commit();
+
+        # Test with a specific date/time
+        date test_dt = 2024-06-15T14:30:00;
+        db.exec("insert into tz_test values (1, %v, %v)", test_dt, test_dt);
+        db.commit();
+
+        *hash row = db.selectRow("select * from tz_test where id = 1");
+        assertEq(2024, get_years(row.dt));
+        assertEq(6, get_months(row.dt));
+        assertEq(15, get_days(row.dt));
+        assertEq(14, get_hours(row.dt));
+        assertEq(30, get_minutes(row.dt));
+
+        # Test timezone option (if valid timezone available)
+        try {
+            db.setOption("timezone", "UTC");
+            # Insert and retrieve with UTC timezone
+            db.exec("insert into tz_test values (2, %v, %v)", test_dt, test_dt);
+            db.commit();
+            row = db.selectRow("select * from tz_test where id = 2");
+            # Verify the date was stored correctly
+            assertEq(2024, get_years(row.dt));
+        } catch (hash<auto> ex) {
+            # Timezone setting may not be available in all configurations
+            if (ex.err != "MYSQL-OPTION-ERROR")
+                rethrow;
+        }
     }
 }
