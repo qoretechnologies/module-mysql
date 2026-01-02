@@ -10,11 +10,11 @@
     - @ref mysqlstoredprocs
     - @ref mysqlreleasenotes
 
-    @section mysqlintro Introducion to the mysql Module
+    @section mysqlintro Introduction to the mysql Module
 
     The mysql module provides a <a href="www.mysql.com">MySQL</a> driver to Qore's DBI system, allowing Qore programs to access MySQL databases through the Datasource, DatasourcePool, and SQLStatement classes.
 
-    This module is released under the <a href="http://www.gnu.org/licenses/old-licenses/gpl-2.0.html">GPL 2</a> and is tagged as such in the module's header (meaning it can only be loaded if the Qore library was initialized from a GPL program as well).
+    This module is released under the <a href="http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html">LGPL 2.1</a> when compiled with MariaDB, or <a href="http://www.gnu.org/licenses/old-licenses/gpl-2.0.html">GPL 2</a> when compiled with MySQL (and is tagged as such in the module's header).
 
     Example of creating a MySQL Datasource:
     @code
@@ -78,11 +78,11 @@ major_version * 10000 + minor_version * 100 + sub_version
 
     @section mysqltrans Transaction Management
 
-    This driver sets new connections to use transaction isolation level <tt>read committed</tt>> explicitly for every new connection to conform to Qore's default transaction management style.
+    This driver sets new connections to use transaction isolation level <tt>read committed</tt> explicitly for every new connection to conform to Qore's default transaction management style.
 
     The transaction level can be changed manually, however, using the <tt>Datasource::exec()</tt> method.
 
-    Aditionally the <tt>CLIENT_FOUND_ROWS</tt> option is set for each connection, so <tt>Datasource::exec()</tt> will return the number of rows affected by insert/update queries, etc in a manner consistent with other Qore DBI drivers (if this option is not set and a single row is updated with the same values, 0 would be returned instead of 1 which would not confirm to the behavior of other Qore DBI drivers).
+    Additionally the <tt>CLIENT_FOUND_ROWS</tt> option is set for each connection, so <tt>Datasource::exec()</tt> will return the number of rows affected by insert/update queries, etc in a manner consistent with other Qore DBI drivers (if this option is not set and a single row is updated with the same values, 0 would be returned instead of 1 which would not conform to the behavior of other Qore DBI drivers).
 
     @section mysqlbind Binding and Types
 
@@ -109,24 +109,36 @@ date now = db.selectRow("select current_timestamp into :time").time;
     @subsection mysql_to_qore MySQL to Qore Type Mappings
 
     |!MySQL Type|!Qore Type|!Notes
-    |<tt>TINYINT</tt>|<tt>Type::Int</tt>|direct conversion (note that <tt>BOOL</tt> and <tt>BOOLEAN</tt> are synonyms for this type in ~MySQL)
+    |<tt>TINYINT</tt>|<tt>Type::Int</tt>|direct conversion (note that <tt>BOOL</tt> and <tt>BOOLEAN</tt> are synonyms for this type in MySQL)
     |<tt>SMALLINT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>MEDIUMINT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>INT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>BIGINT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>YEAR</tt>|<tt>Type::Int</tt>|direct conversion
+    |<tt>BIT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>DECIMAL</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptions "driver options"
+    |<tt>NUMERIC</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptions "driver options"
     |<tt>FLOAT</tt>|<tt>Type::Float</tt>|direct conversion
     |<tt>DOUBLE</tt>|<tt>Type::Float</tt>|direct conversion
     |<tt>DATETIME</tt>|<tt>Type::Date</tt>|direct conversion
     |<tt>DATE</tt>|<tt>Type::Date</tt>|direct conversion
     |<tt>TIME</tt>|<tt>Type::Date</tt>|direct conversion; the date portion will be set to January 1, 1970 (start of Qore's 64-bit epoch)
     |<tt>TIMESTAMP</tt>|<tt>Type::Date</tt>|direct conversion
+    |<tt>CHAR</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>VARCHAR</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>TEXT</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>TINYTEXT</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>MEDIUMTEXT</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>LONGTEXT</tt>|<tt>Type::String</tt>|direct conversion
     |<tt>BLOB</tt>|<tt>Type::Binary</tt>|direct conversion
     |<tt>TINYBLOB</tt>|<tt>Type::Binary</tt>|direct conversion
     |<tt>MEDIUMBLOB</tt>|<tt>Type::Binary</tt>|direct conversion
+    |<tt>LONGBLOB</tt>|<tt>Type::Binary</tt>|direct conversion
     |<tt>BINARY</tt>|<tt>Type::Binary</tt>|direct conversion
     |<tt>VARBINARY</tt>|<tt>Type::Binary</tt>|direct conversion
+    |<tt>ENUM</tt>|<tt>Type::String</tt>|returned as string value
+    |<tt>SET</tt>|<tt>Type::String</tt>|returned as comma-separated string value
+    |<tt>JSON</tt>|<tt>Type::String</tt>|returned as JSON string (MySQL 5.7+)
 
     @subsection mysql_binding_by_value Binding By Value
 
@@ -168,7 +180,13 @@ hash: (1 member)
     @section mysqlreleasenotes Release Notes
 
     @subsection mysql2_1 mysql Driver Version 2.1
+    <b>New Features and Bug Fixes</b>
     - updated build to use the latest %Qore APIs
+    - fixed error message in \c mysql_stmt_api_bind_placeholders() that incorrectly referenced "pgsql" driver
+    - fixed missing error handling in \c MyResult::bind() for \c mysql_stmt_bind_result() failures
+    - fixed debug printf format string mismatch in \c QoreMysqlBindGroup::add()
+    - updated documentation with expanded type mappings and fixed typos
+    - added comprehensive negative test cases for better test coverage
 
     @subsection mysql2021 mysql Driver Version 2.0.2.1
     <b>New Features and Bug Fixes</b>
