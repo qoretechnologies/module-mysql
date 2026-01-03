@@ -237,6 +237,11 @@ static MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
         ds->setQoreEncoding(QCS_DEFAULT);
     }
 
+    // Check for interrupt before connection attempt
+    if (qore_check_io_interrupt(xsink)) {
+        return nullptr;
+    }
+
     MYSQL* db = mysql_init(NULL);
     if (!db) {
         xsink->outOfMemory();
@@ -830,6 +835,11 @@ int QoreMysqlBindGroup::execIntern(ExceptionSink* xsink) {
     assert(stmt);
     myres.reset();
 
+    // Check for interrupt before query execution
+    if (qore_check_io_interrupt(xsink)) {
+        return -1;
+    }
+
     if (mysql_stmt_execute(stmt)) {
         xsink->raiseException("DBI:MYSQL:ERROR", mydata->error());
         return -1;
@@ -844,6 +854,10 @@ int QoreMysqlBindGroup::getDataRows(QoreListNode& l, ExceptionSink* xsink, int m
     // row count
     int c = 0;
     while ((max < 0 || c < max) && !mysql_stmt_fetch(stmt)) {
+        // Check for interrupt periodically during fetch
+        if ((c % 100) == 0 && qore_check_io_interrupt(xsink)) {
+            return -1;
+        }
         l.push(myres.getSingleRow(xsink), xsink);
         assert(!*xsink);
         ++c;
@@ -861,6 +875,10 @@ int QoreMysqlBindGroup::getDataColumns(QoreHashNode& h, ExceptionSink* xsink, in
     // row count
     int c = 0;
     while ((max < 0 || c < max) && !mysql_stmt_fetch(stmt)) {
+        // Check for interrupt periodically during fetch
+        if ((c % 100) == 0 && qore_check_io_interrupt(xsink)) {
+            return -1;
+        }
         if (h.empty())
             myres.setupColumns(h);
 
@@ -1488,6 +1506,11 @@ static QoreListNode* get_result_set_horiz(const QoreMysqlConnection& conn, MYSQL
 static QoreValue qore_mysql_do_sql(const QoreMysqlConnection& conn, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink, bool horiz = false) {
     QORE_TRACE("qore_mysql_do_sql()");
 
+    // Check for interrupt before query execution
+    if (qore_check_io_interrupt(xsink)) {
+        return QoreValue();
+    }
+
     TempEncodingHelper tqstr(qstr, conn.ds.getQoreEncoding(), xsink);
     if (!tqstr)
         return QoreValue();
@@ -1514,6 +1537,11 @@ static QoreValue qore_mysql_do_sql(const QoreMysqlConnection& conn, const QoreSt
 
 static QoreHashNode* qore_mysql_do_select_row(const QoreMysqlConnection& conn, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink) {
     QORE_TRACE("qore_mysql_do_select_row()");
+
+    // Check for interrupt before query execution
+    if (qore_check_io_interrupt(xsink)) {
+        return nullptr;
+    }
 
     TempEncodingHelper tqstr(qstr, conn.ds.getQoreEncoding(), xsink);
     if (!tqstr)

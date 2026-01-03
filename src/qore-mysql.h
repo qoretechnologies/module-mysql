@@ -28,6 +28,7 @@
 #include <config.h>
 
 #include <qore/Qore.h>
+#include <qore/QoreSandboxManager.h>
 
 #include <mysql.h>
 
