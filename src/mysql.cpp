@@ -538,6 +538,9 @@ void QoreMysqlBindGroup::reset(ExceptionSink* xsink) {
 
 int QoreMysqlBindGroup::prepare(bool unsupported_ok, ExceptionSink* xsink) {
    assert(!stmt);
+   if (qore_check_io_interrupt(xsink)) {
+      return -1;
+   }
    stmt = mydata->stmt_init(xsink);
    if (!stmt)
       return -1;
@@ -763,6 +766,10 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
 
     cstr_vector_t::iterator sli = phl.begin();
     while (sli != phl.end()) {
+        // check for interrupt at each iteration
+        if (qore_check_io_interrupt(xsink)) {
+            return nullptr;
+        }
         // setup a temporary statement to retrieve values
         MYSQL_STMT *tmp_stmt = mydata->stmt_init(xsink);
         if (!tmp_stmt)
@@ -1455,6 +1462,10 @@ static QoreHashNode* get_result_set(const QoreMysqlConnection& conn, MYSQL_RES *
             assert(lengths);
         }
         rn++;
+        // check for interrupt periodically (every 100 rows)
+        if ((rn % 100) == 0 && qore_check_io_interrupt(xsink)) {
+            return nullptr;
+        }
         if (single_row && rn > 1) {
             xsink->raiseException("DBI-SELECT-ROW-ERROR", "SQL passed to selectRow() returned more than 1 row");
             return 0;
@@ -1491,6 +1502,10 @@ static QoreListNode* get_result_set_horiz(const QoreMysqlConnection& conn, MYSQL
          assert(lengths);
       }
       rn++;
+      // check for interrupt periodically (every 100 rows)
+      if ((rn % 100) == 0 && qore_check_io_interrupt(xsink)) {
+         return nullptr;
+      }
       ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
 
       for (int i = 0; i < num_fields; i++)
