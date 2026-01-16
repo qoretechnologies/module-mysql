@@ -34,7 +34,7 @@
 
 #include <string>
 
-#if defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80000
+#if defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80000 && !defined(LIBMARIADB) && !defined(MARIADB_BASE_VERSION)
 typedef bool my_bool;
 #endif
 
