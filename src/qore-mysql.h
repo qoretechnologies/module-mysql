@@ -34,6 +34,10 @@
 
 #include <string>
 
+#if defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80000
+typedef bool my_bool;
+#endif
+
 #ifndef MYSQL_PORT
 #define MYSQL_PORT 3306
 #endif

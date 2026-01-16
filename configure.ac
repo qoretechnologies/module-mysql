@@ -460,6 +460,19 @@ check_mysql() {
              with_mysql_libs="$mld/mysql"
              mysql_libname=mysqlclient_r
              mysql_static=1
+          elif test -e "$mld/mysql/libmysqlclient.${SHLIB_SUFFIX}"; then
+             with_mysql_libs="$mld/mysql"
+             mysql_libname=mysqlclient
+          elif test -e "$mld/mariadb/mysql/libmysqlclient.${SHLIB_SUFFIX}"; then
+             with_mysql_libs="$mld/mariadb/mysql"
+             mysql_libname=mysqlclient
+          elif test -e "$mld/percona/mysql/libmysqlclient.${SHLIB_SUFFIX}"; then
+             with_mysql_libs="$mld/percona/mysql"
+             mysql_libname=mysqlclient
+          elif test -f "$mld/mysql/libmysqlclient.a"; then
+             with_mysql_libs="$mld/mysql"
+             mysql_libname=mysqlclient
+             mysql_static=1
           fi
        fi
     fi
@@ -485,19 +498,36 @@ if test "${with_mysql}" != "no"; then
          fi
       fi
       if test -n "${with_mysql_libs}"; then
-         if test ! -e "${with_mysql_libs}/libmysqlclient_r.${SHLIB_SUFFIX}"; then
-            if test -e "${with_mysql_libs}/mysql/libmysqlclient_r.${SHLIB_SUFFIX}"; then
-               with_mysql_libs="${with_mysql_libs}/mysql"
-            else
-               if test -f "${with_mysql_libs}/libmysqlclient_r.a"; then
-                  mysql_static=1
-               elif test -f "${with_mysql_libs}/mysql/libmysqlclient_r.a"; then
-                  with_mysql_libs="${with_mysql_libs}/mysql"
-                  mysql_static=1
-               else
-                  AC_MSG_ERROR([mysql client library not found in $with_mysql_libs])
-               fi
-            fi
+         if test -e "${with_mysql_libs}/libmysqlclient_r.${SHLIB_SUFFIX}"; then
+            mysql_libname=mysqlclient_r
+         elif test -e "${with_mysql_libs}/libmariadbclient_r.${SHLIB_SUFFIX}"; then
+            mysql_libname=mariadbclient_r
+         elif test -e "${with_mysql_libs}/libmysqlclient.${SHLIB_SUFFIX}"; then
+            mysql_libname=mysqlclient
+         elif test -e "${with_mysql_libs}/libmariadb.${SHLIB_SUFFIX}"; then
+            mysql_libname=mariadb
+         elif test -e "${with_mysql_libs}/mysql/libmysqlclient_r.${SHLIB_SUFFIX}"; then
+            with_mysql_libs="${with_mysql_libs}/mysql"
+            mysql_libname=mysqlclient_r
+         elif test -e "${with_mysql_libs}/mysql/libmysqlclient.${SHLIB_SUFFIX}"; then
+            with_mysql_libs="${with_mysql_libs}/mysql"
+            mysql_libname=mysqlclient
+         elif test -f "${with_mysql_libs}/libmysqlclient_r.a"; then
+            mysql_libname=mysqlclient_r
+            mysql_static=1
+         elif test -f "${with_mysql_libs}/libmysqlclient.a"; then
+            mysql_libname=mysqlclient
+            mysql_static=1
+         elif test -f "${with_mysql_libs}/mysql/libmysqlclient_r.a"; then
+            with_mysql_libs="${with_mysql_libs}/mysql"
+            mysql_libname=mysqlclient_r
+            mysql_static=1
+         elif test -f "${with_mysql_libs}/mysql/libmysqlclient.a"; then
+            with_mysql_libs="${with_mysql_libs}/mysql"
+            mysql_libname=mysqlclient
+            mysql_static=1
+         else
+            AC_MSG_ERROR([mysql client library not found in $with_mysql_libs])
          fi
       else
          AC_MSG_ERROR([--with-mysql-libs must also be used when --with-mysql-incudes is used])
