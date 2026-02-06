@@ -41,27 +41,33 @@
 
 typedef std::vector<std::string> strvec_t;
 
-DLLEXPORT char qore_module_name[] = "mysql";
-DLLEXPORT char qore_module_version[] = PACKAGE_VERSION;
+static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink);
+static void qore_mysql_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink);
+static void qore_mysql_module_delete();
+
+extern "C" DLLEXPORT void mysql_qore_module_desc(QoreModuleInfo& mod_info) {
+    mod_info.name = "mysql";
+    mod_info.version = PACKAGE_VERSION;
 #if defined(MARIADB_BASE_VERSION)
-DLLEXPORT char qore_module_description[] = "Mariadb/MySQL database driver";
+    mod_info.desc = "Mariadb/MySQL database driver";
 #else
-DLLEXPORT char qore_module_description[] = "Mysql database driver";
+    mod_info.desc = "Mysql database driver";
 #endif
-DLLEXPORT char qore_module_author[] = "David Nichols <david@qore.org>";
-DLLEXPORT char qore_module_url[] = "http://qore.org";
-DLLEXPORT int qore_module_api_major = QORE_MODULE_API_MAJOR;
-DLLEXPORT int qore_module_api_minor = QORE_MODULE_API_MINOR;
-DLLEXPORT qore_module_init_t qore_module_init = qore_mysql_module_init;
-DLLEXPORT qore_module_ns_init_t qore_module_ns_init = qore_mysql_module_ns_init;
-DLLEXPORT qore_module_delete_t qore_module_delete = qore_mysql_module_delete;
+    mod_info.author = "David Nichols <david@qore.org>";
+    mod_info.url = "http://qore.org";
+    mod_info.api_major = QORE_MODULE_API_MAJOR;
+    mod_info.api_minor = QORE_MODULE_API_MINOR;
+    mod_info.init = qore_mysql_module_init;
+    mod_info.ns_init = qore_mysql_module_ns_init;
+    mod_info.del = qore_mysql_module_delete;
 #if defined(HAVE_MYSQL_CLIENT_LICENSE) || defined(MARIADB_BASE_VERSION)
-DLLEXPORT qore_license_t qore_module_license = QL_LGPL;
-DLLEXPORT char qore_module_license_str[] = "LGPL 2.1";
+    mod_info.license = QL_LGPL;
+    mod_info.license_str = "LGPL 2.1";
 #else
-DLLEXPORT qore_license_t qore_module_license = QL_GPL;
-DLLEXPORT char qore_module_license_str[] = "GPL 2.1";
+    mod_info.license = QL_GPL;
+    mod_info.license_str = "GPL 2.1";
 #endif
+}
 
 // driver capabilities
 static int mysql_caps = DBI_CAP_NONE
@@ -1693,7 +1699,7 @@ static QoreValue mysql_opt_get(const Datasource* ds, const char* opt) {
     return mc->getOption(opt);
 }
 
-QoreStringNode* qore_mysql_module_init() {
+static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink) {
     // initialize thread key to test for mysql_thread_init()
     pthread_key_create(&ptk_mysql, NULL);
     tclist.push(mysql_thread_cleanup, NULL);
@@ -1746,16 +1752,14 @@ QoreStringNode* qore_mysql_module_init() {
 
     // register database functions with DBI subsystem
     DBID_MYSQL = DBI.registerDriver("mysql", methods, mysql_caps);
-
-    return nullptr;
 }
 
-void qore_mysql_module_ns_init(QoreNamespace *rns, QoreNamespace *qns) {
+static void qore_mysql_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink) {
     QORE_TRACE("qore_mysql_module_ns_init()");
     // nothing to do at the moment
 }
 
-void qore_mysql_module_delete() {
+static void qore_mysql_module_delete() {
     QORE_TRACE("qore_mysql_module_delete()");
 
     //printf("mysql delete\n");
