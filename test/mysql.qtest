@@ -9,9 +9,7 @@
 %requires QUnit
 %requires mysql
 
-%require-our
-%enable-all-warnings
-%new-style
+%modern
 %exec-class MysqlTest
 
 class MysqlTest inherits QUnit::Test {

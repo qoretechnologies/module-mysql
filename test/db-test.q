@@ -4,8 +4,7 @@
 # databases users must be able to create and destroy tables and procedures, etc
 # in order to execute all tests
 
-%require-our
-%enable-all-warnings
+%modern
 
 our ($o, $errors, $test_count);
 

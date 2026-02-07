@@ -1,6 +1,6 @@
 #!/usr/bin/env qore
 
-%require-our
+%modern
 
 our hash $thash;
 our int $errors;
