@@ -6,7 +6,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2025 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -244,7 +244,7 @@ static MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
     }
 
     // Check for interrupt before connection attempt
-    if (qore_check_io_interrupt(xsink)) {
+    if (qore_check_cancel(xsink)) {
         return nullptr;
     }
 
@@ -544,7 +544,7 @@ void QoreMysqlBindGroup::reset(ExceptionSink* xsink) {
 
 int QoreMysqlBindGroup::prepare(bool unsupported_ok, ExceptionSink* xsink) {
    assert(!stmt);
-   if (qore_check_io_interrupt(xsink)) {
+   if (qore_check_cancel(xsink)) {
       return -1;
    }
    stmt = mydata->stmt_init(xsink);
@@ -773,7 +773,7 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
     cstr_vector_t::iterator sli = phl.begin();
     while (sli != phl.end()) {
         // check for interrupt at each iteration
-        if (qore_check_io_interrupt(xsink)) {
+        if (qore_check_cancel(xsink)) {
             return nullptr;
         }
         // setup a temporary statement to retrieve values
@@ -849,7 +849,7 @@ int QoreMysqlBindGroup::execIntern(ExceptionSink* xsink) {
     myres.reset();
 
     // Check for interrupt before query execution
-    if (qore_check_io_interrupt(xsink)) {
+    if (qore_check_cancel(xsink)) {
         return -1;
     }
 
@@ -868,7 +868,7 @@ int QoreMysqlBindGroup::getDataRows(QoreListNode& l, ExceptionSink* xsink, int m
     int c = 0;
     while ((max < 0 || c < max) && !mysql_stmt_fetch(stmt)) {
         // Check for interrupt periodically during fetch
-        if ((c % 100) == 0 && qore_check_io_interrupt(xsink)) {
+        if ((c % 100) == 0 && qore_check_cancel(xsink)) {
             return -1;
         }
         l.push(myres.getSingleRow(xsink), xsink);
@@ -889,7 +889,7 @@ int QoreMysqlBindGroup::getDataColumns(QoreHashNode& h, ExceptionSink* xsink, in
     int c = 0;
     while ((max < 0 || c < max) && !mysql_stmt_fetch(stmt)) {
         // Check for interrupt periodically during fetch
-        if ((c % 100) == 0 && qore_check_io_interrupt(xsink)) {
+        if ((c % 100) == 0 && qore_check_cancel(xsink)) {
             return -1;
         }
         if (h.empty())
@@ -1469,7 +1469,7 @@ static QoreHashNode* get_result_set(const QoreMysqlConnection& conn, MYSQL_RES *
         }
         rn++;
         // check for interrupt periodically (every 100 rows)
-        if ((rn % 100) == 0 && qore_check_io_interrupt(xsink)) {
+        if ((rn % 100) == 0 && qore_check_cancel(xsink)) {
             return nullptr;
         }
         if (single_row && rn > 1) {
@@ -1509,7 +1509,7 @@ static QoreListNode* get_result_set_horiz(const QoreMysqlConnection& conn, MYSQL
       }
       rn++;
       // check for interrupt periodically (every 100 rows)
-      if ((rn % 100) == 0 && qore_check_io_interrupt(xsink)) {
+      if ((rn % 100) == 0 && qore_check_cancel(xsink)) {
          return nullptr;
       }
       ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
@@ -1528,7 +1528,7 @@ static QoreValue qore_mysql_do_sql(const QoreMysqlConnection& conn, const QoreSt
     QORE_TRACE("qore_mysql_do_sql()");
 
     // Check for interrupt before query execution
-    if (qore_check_io_interrupt(xsink)) {
+    if (qore_check_cancel(xsink)) {
         return QoreValue();
     }
 
@@ -1560,7 +1560,7 @@ static QoreHashNode* qore_mysql_do_select_row(const QoreMysqlConnection& conn, c
     QORE_TRACE("qore_mysql_do_select_row()");
 
     // Check for interrupt before query execution
-    if (qore_check_io_interrupt(xsink)) {
+    if (qore_check_cancel(xsink)) {
         return nullptr;
     }
 
