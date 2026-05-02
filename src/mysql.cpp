@@ -1019,21 +1019,25 @@ int QoreMysqlBindNode::bindValue(const QoreMysqlConnection& conn, MYSQL_BIND* bu
     qore_type_t ntype = data.value.getType();
 
     if (ntype == NT_STRING) {
-        QoreStringNode* bstr = data.value.get<QoreStringNode>();
+        QoreStringNodeValueHelper bstr(data.value);
+        QoreStringNode* bind_str = const_cast<QoreStringNode*>(*bstr);
         const QoreEncoding* enc = conn.ds.getQoreEncoding();
         // convert to the db charset if necessary
         if (bstr->getEncoding() != enc) {
-            bstr = bstr->convertEncoding(enc, xsink);
-            if (!bstr) // exception was thrown
+            bind_str = bstr->convertEncoding(enc, xsink);
+            if (!bind_str) // exception was thrown
                 return -1;
             // save temporary string for later deleting
-            data.tstr = bstr;
+            data.tstr = bind_str;
+        } else if (bstr.is_temp()) {
+            bind_str = bstr.getReferencedValue();
+            data.tstr = bind_str;
         }
 
-        len = bstr->strlen();
+        len = bind_str->strlen();
 
         buf->buffer_type = MYSQL_TYPE_STRING;
-        buf->buffer = (char *)bstr->getBuffer();
+        buf->buffer = (char *)bind_str->getBuffer();
         buf->buffer_length = len + 1;
         buf->length = &len;
         return 0;

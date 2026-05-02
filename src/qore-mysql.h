@@ -320,7 +320,7 @@ public:
 
         if (!strcasecmp(opt, MYSQL_OPT_COLLATION)) {
             assert(val.getType() == NT_STRING);
-            const QoreStringNode* str = val.get<const QoreStringNode>();
+            QoreStringValueHelper str(val);
             std::string new_collation;
             if (str->empty()) {
                 xsink->raiseException("MYSQL-OPTION-ERROR", "the 'collation' option requires a value; leaving with " \
@@ -337,7 +337,7 @@ public:
 
         assert(!strcasecmp(opt, DBI_OPT_TIMEZONE));
         assert(val.getType() == NT_STRING);
-        const QoreStringNode* str = val.get<const QoreStringNode>();
+        QoreStringValueHelper str(val);
         const AbstractQoreZoneInfo* tz = find_create_timezone(str->c_str(), xsink);
         if (*xsink)
             return -1;
