@@ -453,10 +453,15 @@ public:
 
     // also can be used like "select"
     DLLLOCAL QoreValue exec(ExceptionSink* xsink, bool cols = false);
+#ifdef QDBI_METHOD_SELECT_TYPED
+    DLLLOCAL QoreValue execTyped(ExceptionSink* xsink);
+    DLLLOCAL QoreValue selectRowsTyped(ExceptionSink* xsink);
+#endif
     DLLLOCAL QoreValue selectRows(ExceptionSink* xsink);
     DLLLOCAL QoreHashNode* selectRow(ExceptionSink* xsink);
 
     DLLLOCAL QoreHashNode* getOutputHash(ExceptionSink* xsink);
+    DLLLOCAL QoreHashNode* describe(ExceptionSink* xsink);
 };
 
 class QoreMysqlBindGroupHelper : public QoreMysqlBindGroup {
@@ -488,7 +493,6 @@ public:
     DLLLOCAL QoreHashNode* fetchRow(ExceptionSink* xsink);
     DLLLOCAL QoreListNode* fetchRows(int rows, ExceptionSink* xsink);
     DLLLOCAL QoreHashNode* fetchColumns(int rows, ExceptionSink* xsink);
-    DLLLOCAL QoreHashNode* describe(ExceptionSink *xsink);
     DLLLOCAL bool next();
 };
 
