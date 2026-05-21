@@ -1,3 +1,16 @@
+-----------
+Version 2.1
+-----------
+
+* updated build to use the latest Qore APIs
+* fixed error message in mysql_stmt_api_bind_placeholders() that incorrectly referenced "pgsql" driver
+* fixed missing error handling in MyResult::bind() for mysql_stmt_bind_result() failures
+* fixed debug printf format string mismatch in QoreMysqlBindGroup::add()
+* updated documentation with expanded type mappings and fixed typos
+* added comprehensive negative test cases for better test coverage
+* added columnar DBI result support with Datasource::selectColumnar() and SQLStatement::fetchColumnar() when built against Qore with columnar DBI APIs
+
+
 ---------------
 Version 2.0.2.1
 ---------------

@@ -24,6 +24,10 @@
 */
 
 #include "qore-mysql.h"
+
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+#include <qore/QoreColumnarResult.h>
+#endif
 #include "qore-mysql-module.h"
 
 #include <errmsg.h>
@@ -83,6 +87,9 @@ static int mysql_caps = DBI_CAP_NONE
    | DBI_CAP_SERVER_TIME_ZONE
 #ifdef QDBI_METHOD_SELECT_TYPED
    | DBI_CAP_HAS_TYPED_SELECT
+#endif
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+   | DBI_CAP_HAS_COLUMNAR_SELECT
 #endif
 ;
 
@@ -999,6 +1006,39 @@ QoreValue QoreMysqlBindGroup::selectRowsTyped(ExceptionSink* xsink) {
 }
 #endif
 
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+QoreColumnarResult* QoreMysqlBindGroup::selectColumnar(ExceptionSink* xsink) {
+    if (execIntern(xsink)) {
+        return nullptr;
+    }
+
+    if (!myres) {
+        xsink->raiseException("COLUMNAR-RESULT-ERROR",
+            "Datasource::selectColumnar() requires an SQL statement returning result columns");
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
+
+    if (myres.bind(stmt)) {
+        xsink->raiseException("DBI:MYSQL:BIND-ERROR", "error binding result columns: %s",
+            mysql_stmt_error(stmt));
+        return nullptr;
+    }
+
+    if (getDataColumns(**h, xsink, -1, true)) {
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    return QoreColumnarResult::fromColumnHash(*h, *desc, xsink);
+}
+#endif
+
 QoreValue QoreMysqlBindGroup::selectRows(ExceptionSink* xsink) {
     if (execIntern(xsink))
         return QoreValue();
@@ -1432,6 +1472,25 @@ static QoreHashNode* mysql_stmt_api_fetch_columns(SQLStatement* stmt, int rows, 
    return bg->fetchColumns(rows, xsink);
 }
 
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+static QoreColumnarResult* mysql_stmt_api_fetch_columnar(SQLStatement* stmt, int rows, ExceptionSink* xsink) {
+   QoreMysqlPreparedStatement* bg = (QoreMysqlPreparedStatement*)stmt->getPrivateData();
+   assert(bg);
+
+   ReferenceHolder<QoreHashNode> columns(bg->fetchColumns(rows, xsink), xsink);
+   if (*xsink || !columns) {
+      return nullptr;
+   }
+
+   ReferenceHolder<QoreHashNode> desc(bg->describe(xsink), xsink);
+   if (*xsink) {
+      return nullptr;
+   }
+
+   return QoreColumnarResult::fromColumnHash(*columns, *desc, xsink);
+}
+#endif
+
 static QoreHashNode* mysql_stmt_api_describe(SQLStatement* stmt, ExceptionSink* xsink) {
    QoreMysqlPreparedStatement* bg = (QoreMysqlPreparedStatement*)stmt->getPrivateData();
    assert(bg);
@@ -1761,6 +1820,33 @@ static QoreValue qore_mysql_select_typed(Datasource* ds, const QoreString* qstr,
 }
 #endif
 
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+static QoreColumnarResult* qore_mysql_shape_columnar(QoreValue value, ExceptionSink* xsink) {
+    ValueHolder holder(value, xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+    return qore_columnar_result_from_value(*holder, nullptr, "mysql unprepared select", xsink);
+}
+
+static QoreColumnarResult* qore_mysql_select_columnar(Datasource* ds, const QoreString* qstr,
+        const QoreListNode* args, ExceptionSink* xsink) {
+    const QoreMysqlConnection& conn = *((QoreMysqlConnection*)ds->getPrivateData());
+    check_init();
+    QoreMysqlBindGroupHelper bg(ds, xsink);
+    int rc = bg.prepareAndBind(qstr, args, xsink);
+    if (rc == -1) {
+        return nullptr;
+    }
+
+    if (rc == 1) {
+        return qore_mysql_shape_columnar(qore_mysql_do_sql(conn, qstr, args, xsink), xsink);
+    }
+
+    return bg.selectColumnar(xsink);
+}
+#endif
+
 static QoreValue qore_mysql_exec(Datasource *ds, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink) {
     const QoreMysqlConnection& conn = *((QoreMysqlConnection*)ds->getPrivateData());
     check_init();
@@ -1851,6 +1937,9 @@ static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xs
     methods.add(QDBI_METHOD_SELECT_TYPED,       qore_mysql_select_typed);
     methods.add(QDBI_METHOD_SELECT_ROWS_TYPED,  qore_mysql_select_rows_typed);
 #endif
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+    methods.add(QDBI_METHOD_SELECT_COLUMNAR,    qore_mysql_select_columnar);
+#endif
     methods.add(QDBI_METHOD_SELECT_ROW,         qore_mysql_select_row);
     methods.add(QDBI_METHOD_EXEC,               qore_mysql_exec);
     methods.add(QDBI_METHOD_EXECRAW,            qore_mysql_execRaw);
@@ -1869,6 +1958,9 @@ static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xs
     methods.add(QDBI_METHOD_STMT_FETCH_ROW, mysql_stmt_api_fetch_row);
     methods.add(QDBI_METHOD_STMT_FETCH_ROWS, mysql_stmt_api_fetch_rows);
     methods.add(QDBI_METHOD_STMT_FETCH_COLUMNS, mysql_stmt_api_fetch_columns);
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+    methods.add(QDBI_METHOD_STMT_FETCH_COLUMNAR, mysql_stmt_api_fetch_columnar);
+#endif
     methods.add(QDBI_METHOD_STMT_DESCRIBE, mysql_stmt_api_describe);
     methods.add(QDBI_METHOD_STMT_NEXT, mysql_stmt_api_next);
     methods.add(QDBI_METHOD_STMT_CLOSE, mysql_stmt_api_close);

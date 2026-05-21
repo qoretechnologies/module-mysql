@@ -34,6 +34,8 @@
 
 #include <string>
 
+class QoreColumnarResult;
+
 #if defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80000 && !defined(LIBMARIADB) && !defined(MARIADB_BASE_VERSION)
 typedef bool my_bool;
 #endif
@@ -456,6 +458,9 @@ public:
 #ifdef QDBI_METHOD_SELECT_TYPED
     DLLLOCAL QoreValue execTyped(ExceptionSink* xsink);
     DLLLOCAL QoreValue selectRowsTyped(ExceptionSink* xsink);
+#endif
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+    DLLLOCAL QoreColumnarResult* selectColumnar(ExceptionSink* xsink);
 #endif
     DLLLOCAL QoreValue selectRows(ExceptionSink* xsink);
     DLLLOCAL QoreHashNode* selectRow(ExceptionSink* xsink);

@@ -33,8 +33,13 @@ Datasource db(SQL::DSMySQL, user, pass, db, encoding, hostname, port);
     - \c DBI_CAP_HAS_NUMBER_SUPPORT
     - \c DBI_CAP_HAS_OPTION_SUPPORT
     - \c DBI_CAP_SERVER_TIME_ZONE
+    - \c DBI_CAP_HAS_COLUMNAR_SELECT
 
     The driver uses MySQL's prepared statement interface when it is available (must be compiled with MySQL 4 or better).
+
+    When built against a %Qore library with columnar DBI support, the driver implements
+    \c Datasource::selectColumnar() and \c SQLStatement::fetchColumnar() to return
+    \c Qore::SQL::ColumnarResult objects suitable for DataFrame and analytical workloads.
 
     If a connection times out while not in a transaction, the connection will be automatically reconnected.
 
@@ -187,6 +192,8 @@ hash: (1 member)
     - fixed debug printf format string mismatch in \c QoreMysqlBindGroup::add()
     - updated documentation with expanded type mappings and fixed typos
     - added comprehensive negative test cases for better test coverage
+    - added columnar DBI result support with \c Datasource::selectColumnar() and
+      \c SQLStatement::fetchColumnar() when built against %Qore with columnar DBI APIs
 
     @subsection mysql2021 mysql Driver Version 2.0.2.1
     <b>New Features and Bug Fixes</b>
