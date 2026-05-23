@@ -117,6 +117,7 @@ class MysqlTest inherits QUnit::Test {
         addTestCase("SQL error test", \sqlErrorTest());
         addTestCase("prepared statement test", \preparedStatementTest());
         addTestCase("empty result test", \emptyResultTest());
+        addTestCase("columnar result test", \columnarResultTest());
         addTestCase("type conversion test", \typeConversionTest());
         addTestCase("binary data test", \binaryDataTest());
         addTestCase("number options test", \numberOptionsTest());
@@ -596,6 +597,37 @@ class MysqlTest inherits QUnit::Test {
         stmt.prepare("select * from family where family_id = 9999");
         stmt.exec();
         assertFalse(stmt.next());
+        stmt.commit();
+    }
+
+    list asList(auto value) {
+        return value.type() == Type::List ? value : value.toList();
+    }
+
+    columnarResultTest() {
+        Datasource db(connstr);
+
+        ColumnarResult direct = db.selectColumnar("select family_id, name from family order by family_id");
+        assertEq(2, direct.numRows());
+        assertEq(2, direct.numCols());
+        assertEq((1, 2), asList(direct.getColumn("family_id")));
+        assertEq(("Smith", "Jones"), asList(direct.getColumn("name")));
+
+        ColumnarResult empty = db.selectColumnar("select family_id, name from family where family_id < 0");
+        assertEq(0, empty.numRows());
+        assertEq(2, empty.numCols());
+        assertEq(("family_id", "name"), empty.columnNames());
+
+        SQLStatement stmt(db);
+        on_error stmt.rollback();
+        stmt.prepare("select person_id, name from people order by person_id");
+        stmt.exec();
+        ColumnarResult first = stmt.fetchColumnar(rows: 3);
+        ColumnarResult rest = stmt.fetchColumnar(rows: -1);
+        assertEq(3, first.numRows());
+        assertEq(4, rest.numRows());
+        assertEq((1, 2, 3), asList(first.getColumn("person_id")));
+        assertEq((4, 5, 6, 7), asList(rest.getColumn("person_id")));
         stmt.commit();
     }
 

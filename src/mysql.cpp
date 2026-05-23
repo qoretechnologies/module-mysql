@@ -1263,7 +1263,7 @@ QoreListNode* QoreMysqlPreparedStatement::fetchRows(int rows, ExceptionSink *xsi
 
 QoreHashNode* QoreMysqlPreparedStatement::fetchColumns(int rows, ExceptionSink *xsink) {
    ReferenceHolder<QoreHashNode> h(new QoreHashNode, xsink);
-   return !getDataColumns(**h, xsink) ? h.release() : 0;
+   return !getDataColumns(**h, xsink, rows) ? h.release() : 0;
 }
 
 QoreHashNode* QoreMysqlBindGroup::describe(ExceptionSink *xsink) {
