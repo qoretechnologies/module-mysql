@@ -26,7 +26,15 @@
 #include "qore-mysql.h"
 
 #if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+#include <qore/QoreBufferNode.h>
 #include <qore/QoreColumnarResult.h>
+
+#include <cerrno>
+#include <cctype>
+#include <cstring>
+#include <memory>
+#include <unordered_map>
+#include <utility>
 #endif
 #include "qore-mysql-module.h"
 
@@ -296,6 +304,508 @@ static MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
 
     return db;
 }
+
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+namespace {
+struct MysqlColumnarStorage {
+    std::vector<int64> int_values;
+    std::vector<double> float_values;
+    std::vector<QoreBufferDecimal128> decimal_values;
+    std::vector<uint8_t> validity;
+};
+
+static size_t mysql_columnar_bitmap_size(size_t size) {
+    return (size + 7) / 8;
+}
+
+static void mysql_columnar_set_validity_bit(std::vector<uint8_t>& validity, size_t index, bool valid) {
+    size_t byte = index / 8;
+    if (byte >= validity.size()) {
+        validity.resize(byte + 1, 0);
+    }
+
+    uint8_t mask = uint8_t(1) << (index % 8);
+    if (valid) {
+        validity[byte] |= mask;
+    } else {
+        validity[byte] &= ~mask;
+    }
+}
+
+static bool mysql_columnar_is_valid(const std::vector<uint8_t>& validity, size_t index) {
+    if (validity.empty()) {
+        return true;
+    }
+    size_t byte = index / 8;
+    return byte < validity.size() && (validity[byte] & (uint8_t(1) << (index % 8)));
+}
+
+static bool mysql_columnar_decimal_metadata_supported(unsigned long display_width, unsigned int decimals,
+        unsigned int flags, int32_t& precision, int32_t& scale) {
+    if (!display_width || decimals > display_width) {
+        return false;
+    }
+
+    unsigned long p = display_width;
+    if (!(flags & UNSIGNED_FLAG)) {
+        if (!p) {
+            return false;
+        }
+        --p;
+    }
+    if (decimals) {
+        if (!p) {
+            return false;
+        }
+        --p;
+    }
+    if (!p || p > 38 || decimals > p) {
+        return false;
+    }
+
+    precision = static_cast<int32_t>(p);
+    scale = static_cast<int32_t>(decimals);
+    return true;
+}
+
+static bool mysql_columnar_parse_int64(const char* str, int64& value) {
+    if (!str || !*str || strchr(str, '.') || strchr(str, 'e') || strchr(str, 'E')) {
+        return false;
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    long long rv = strtoll(str, &end, 10);
+    if (errno == ERANGE || !end || *end) {
+        return false;
+    }
+
+    value = static_cast<int64>(rv);
+    return true;
+}
+
+static __int128 mysql_columnar_decimal_abs(__int128 value) {
+    return value < 0 ? -value : value;
+}
+
+static __int128 mysql_columnar_decimal_pow10(int32_t exponent) {
+    __int128 rv = 1;
+    for (int32_t i = 0; i < exponent; ++i) {
+        rv *= 10;
+    }
+    return rv;
+}
+
+static int32_t mysql_columnar_decimal_precision(__int128 value) {
+    value = mysql_columnar_decimal_abs(value);
+    int32_t rv = 1;
+    while (value >= 10) {
+        value /= 10;
+        ++rv;
+    }
+    return rv;
+}
+
+static QoreBufferDecimal128 mysql_columnar_decimal_storage(__int128 value) {
+    unsigned __int128 bits = static_cast<unsigned __int128>(value);
+    return QoreBufferDecimal128{static_cast<uint64_t>(bits), static_cast<int64_t>(bits >> 64)};
+}
+
+static int mysql_columnar_parse_decimal128(const char* input, int32_t target_precision, int32_t target_scale,
+        const char* column_name, QoreBufferDecimal128& out, ExceptionSink* xsink) {
+    assert(target_precision > 0 && target_precision <= 38 && target_scale >= 0 && target_scale <= target_precision);
+    if (!input) {
+        xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+            "cannot convert DECIMAL(%d,%d) column '%s' to decimal128; value is not available",
+            target_precision, target_scale, column_name);
+        return -1;
+    }
+
+    size_t begin = 0;
+    size_t input_size = strlen(input);
+    while (begin < input_size && std::isspace(static_cast<unsigned char>(input[begin]))) {
+        ++begin;
+    }
+
+    size_t end = input_size;
+    while (end > begin && std::isspace(static_cast<unsigned char>(input[end - 1]))) {
+        --end;
+    }
+    if (begin == end) {
+        xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+            "cannot convert DECIMAL(%d,%d) column '%s' empty value to decimal128",
+            target_precision, target_scale, column_name);
+        return -1;
+    }
+
+    bool negative = false;
+    size_t pos = begin;
+    if (input[pos] == '+' || input[pos] == '-') {
+        negative = input[pos] == '-';
+        ++pos;
+    }
+
+    bool seen_digit = false;
+    bool seen_dot = false;
+    int64_t fractional_digits = 0;
+    std::string digits;
+    for (; pos < end; ++pos) {
+        unsigned char c = static_cast<unsigned char>(input[pos]);
+        if (std::isdigit(c)) {
+            seen_digit = true;
+            digits.push_back(static_cast<char>(c));
+            if (seen_dot) {
+                ++fractional_digits;
+            }
+            continue;
+        }
+        if (input[pos] == '.' && !seen_dot) {
+            seen_dot = true;
+            continue;
+        }
+        break;
+    }
+
+    if (!seen_digit) {
+        xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+            "cannot convert DECIMAL(%d,%d) column '%s' value '%s' to decimal128; expected at least one digit",
+            target_precision, target_scale, column_name, input);
+        return -1;
+    }
+
+    int64_t exponent = 0;
+    if (pos < end && (input[pos] == 'e' || input[pos] == 'E')) {
+        ++pos;
+        bool exponent_negative = false;
+        if (pos < end && (input[pos] == '+' || input[pos] == '-')) {
+            exponent_negative = input[pos] == '-';
+            ++pos;
+        }
+        if (pos == end || !std::isdigit(static_cast<unsigned char>(input[pos]))) {
+            xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+                "cannot convert DECIMAL(%d,%d) column '%s' value '%s' to decimal128; invalid exponent",
+                target_precision, target_scale, column_name, input);
+            return -1;
+        }
+        while (pos < end && std::isdigit(static_cast<unsigned char>(input[pos]))) {
+            exponent = (exponent * 10) + (input[pos] - '0');
+            if (exponent > 76) {
+                xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+                    "cannot convert DECIMAL(%d,%d) column '%s' value '%s' to decimal128; exponent is too large",
+                    target_precision, target_scale, column_name, input);
+                return -1;
+            }
+            ++pos;
+        }
+        if (exponent_negative) {
+            exponent = -exponent;
+        }
+    }
+
+    if (pos != end) {
+        xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+            "cannot convert DECIMAL(%d,%d) column '%s' value '%s' to decimal128; unexpected character '%c'",
+            target_precision, target_scale, column_name, input, input[pos]);
+        return -1;
+    }
+
+    int64_t source_scale = fractional_digits - exponent;
+    if (source_scale < 0) {
+        digits.append(static_cast<size_t>(-source_scale), '0');
+        source_scale = 0;
+    }
+
+    size_t first_non_zero = digits.find_first_not_of('0');
+    if (first_non_zero == std::string::npos) {
+        out = mysql_columnar_decimal_storage(0);
+        return 0;
+    }
+
+    size_t significant_digits = digits.size() - first_non_zero;
+    if (significant_digits > 38) {
+        xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+            "cannot convert DECIMAL(%d,%d) column '%s' value '%s' to decimal128; precision %zu"
+            " exceeds decimal128 maximum precision 38", target_precision, target_scale, column_name, input,
+            significant_digits);
+        return -1;
+    }
+
+    __int128 unscaled = 0;
+    for (size_t i = first_non_zero; i < digits.size(); ++i) {
+        unscaled = (unscaled * 10) + (digits[i] - '0');
+    }
+    if (negative) {
+        unscaled = -unscaled;
+    }
+
+    if (source_scale < target_scale) {
+        unscaled *= mysql_columnar_decimal_pow10(static_cast<int32_t>(target_scale - source_scale));
+    } else if (source_scale > target_scale) {
+        __int128 divisor = mysql_columnar_decimal_pow10(static_cast<int32_t>(source_scale - target_scale));
+        if (unscaled % divisor) {
+            xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+                "cannot convert DECIMAL(%d,%d) column '%s' value '%s' to decimal128 without losing precision",
+                target_precision, target_scale, column_name, input);
+            return -1;
+        }
+        unscaled /= divisor;
+    }
+
+    if (mysql_columnar_decimal_precision(unscaled) > target_precision) {
+        xsink->raiseException("MYSQL-COLUMNAR-DECIMAL-ERROR",
+            "cannot convert DECIMAL(%d,%d) column '%s' value '%s' to decimal128; value exceeds declared precision",
+            target_precision, target_scale, column_name, input);
+        return -1;
+    }
+
+    out = mysql_columnar_decimal_storage(unscaled);
+    return 0;
+}
+
+static std::string mysql_columnar_unique_name(const char* name, const QoreEncoding* enc,
+        std::unordered_map<std::string, unsigned>& seen) {
+    QoreString lower;
+    lower.set(name, enc);
+    lower.tolwr();
+
+    std::string key(lower.c_str());
+    unsigned index = seen[key]++;
+    if (!index) {
+        return key;
+    }
+
+    QoreStringMaker tmp("%s_%u", key.c_str(), index);
+    return tmp.c_str();
+}
+
+enum class MysqlColumnarKind {
+    Int64,
+    Float64,
+    Decimal128,
+    NumberOptimalInt64,
+    List,
+};
+
+class MysqlColumnarBuilder {
+public:
+    MysqlColumnarBuilder(MyResult& n_result, int n_index, std::string n_name, int number_option, ExceptionSink* xsink)
+        : result(n_result), index(n_index), name(std::move(n_name)), list(xsink) {
+        switch (result.getFieldType(index)) {
+            case FIELD_TYPE_SHORT:
+            case FIELD_TYPE_LONG:
+            case FIELD_TYPE_LONGLONG:
+            case FIELD_TYPE_INT24:
+            case FIELD_TYPE_TINY:
+                kind = MysqlColumnarKind::Int64;
+                storage.reset(new MysqlColumnarStorage);
+                break;
+
+            case FIELD_TYPE_FLOAT:
+            case FIELD_TYPE_DOUBLE:
+                kind = MysqlColumnarKind::Float64;
+                storage.reset(new MysqlColumnarStorage);
+                break;
+
+            case FIELD_TYPE_DECIMAL:
+#ifdef FIELD_TYPE_NEWDECIMAL
+            case FIELD_TYPE_NEWDECIMAL:
+#endif
+                if (number_option != OPT_NUM_STRING
+                        && mysql_columnar_decimal_metadata_supported(result.getFieldMaxLength(index),
+                            result.getFieldDecimals(index), result.getFieldFlags(index), precision, scale)) {
+                    kind = number_option == OPT_NUM_OPTIMAL && !scale && precision <= 18
+                        ? MysqlColumnarKind::NumberOptimalInt64
+                        : MysqlColumnarKind::Decimal128;
+                    storage.reset(new MysqlColumnarStorage);
+                    break;
+                }
+                // fall through
+
+            default:
+                kind = MysqlColumnarKind::List;
+                list = new QoreListNode(autoTypeInfo);
+                break;
+        }
+    }
+
+    const char* getName() const {
+        return name.c_str();
+    }
+
+    int append(ExceptionSink* xsink) {
+        if (kind == MysqlColumnarKind::List) {
+            return appendList(xsink);
+        }
+
+        if (result.isColumnNull(index)) {
+            appendNull();
+            return 0;
+        }
+
+        switch (kind) {
+            case MysqlColumnarKind::Int64:
+                storage->int_values.push_back(result.getBoundInt64Value(index));
+                appendValid();
+                return 0;
+
+            case MysqlColumnarKind::Float64:
+                storage->float_values.push_back(result.getBoundDoubleValue(index));
+                appendValid();
+                return 0;
+
+            case MysqlColumnarKind::Decimal128: {
+                QoreBufferDecimal128 value;
+                if (mysql_columnar_parse_decimal128(result.getBoundStringValue(index), precision, scale,
+                        name.c_str(), value, xsink)) {
+                    return -1;
+                }
+                storage->decimal_values.push_back(value);
+                appendValid();
+                return 0;
+            }
+
+            case MysqlColumnarKind::NumberOptimalInt64: {
+                int64 value;
+                if (mysql_columnar_parse_int64(result.getBoundStringValue(index), value)) {
+                    storage->int_values.push_back(value);
+                    appendValid();
+                    return 0;
+                }
+
+                if (fallbackToList(xsink)) {
+                    return -1;
+                }
+                return appendList(xsink);
+            }
+
+            case MysqlColumnarKind::List:
+                break;
+        }
+
+        assert(false);
+        return -1;
+    }
+
+    QoreValue finish(ExceptionSink* xsink) {
+        if (kind == MysqlColumnarKind::List) {
+            return list.release();
+        }
+
+        assert(storage);
+        QoreBufferElementType element_type = kind == MysqlColumnarKind::Float64
+            ? QoreBufferElementType::Float64
+            : (kind == MysqlColumnarKind::Decimal128 ? QoreBufferElementType::Decimal128
+                : QoreBufferElementType::Int64);
+        bool nullable = null_count > 0;
+        const void* data;
+        switch (element_type) {
+            case QoreBufferElementType::Float64:
+                data = storage->float_values.empty() ? nullptr : storage->float_values.data();
+                break;
+            case QoreBufferElementType::Decimal128:
+                data = storage->decimal_values.empty() ? nullptr : storage->decimal_values.data();
+                break;
+            default:
+                data = storage->int_values.empty() ? nullptr : storage->int_values.data();
+                break;
+        }
+        const uint8_t* validity = nullable && !storage->validity.empty() ? storage->validity.data() : nullptr;
+        if (element_type == QoreBufferElementType::Decimal128) {
+            return QoreBufferNode::wrapExternalStorage(element_type, nullable, row_count, data, validity, storage,
+                null_count, precision, scale, xsink);
+        }
+        return QoreBufferNode::wrapExternalStorage(element_type, nullable, row_count, data, validity, storage,
+            null_count, xsink);
+    }
+
+private:
+    void ensureValidity() {
+        if (!storage->validity.empty()) {
+            storage->validity.resize(mysql_columnar_bitmap_size(row_count + 1), 0);
+            return;
+        }
+
+        storage->validity.resize(mysql_columnar_bitmap_size(row_count + 1), 0xff);
+    }
+
+    void appendNull() {
+        ensureValidity();
+        mysql_columnar_set_validity_bit(storage->validity, row_count, false);
+        switch (kind) {
+            case MysqlColumnarKind::Float64:
+                storage->float_values.push_back(0.0);
+                break;
+            case MysqlColumnarKind::Decimal128:
+                storage->decimal_values.push_back(QoreBufferDecimal128{0, 0});
+                break;
+            default:
+                storage->int_values.push_back(0);
+                break;
+        }
+        ++null_count;
+        ++row_count;
+    }
+
+    void appendValid() {
+        if (!storage->validity.empty()) {
+            mysql_columnar_set_validity_bit(storage->validity, row_count, true);
+        }
+        ++row_count;
+    }
+
+    int fallbackToList(ExceptionSink* xsink) {
+        assert(kind == MysqlColumnarKind::NumberOptimalInt64);
+        assert(storage);
+
+        list = new QoreListNode(autoTypeInfo);
+        for (size_t i = 0; i < row_count; ++i) {
+            if (i && !(i % 100) && qore_check_cancel(xsink)) {
+                return -1;
+            }
+
+            if (mysql_columnar_is_valid(storage->validity, i)) {
+                list->push(storage->int_values[i], xsink);
+            } else {
+                list->push(null(), xsink);
+            }
+            if (*xsink) {
+                return -1;
+            }
+        }
+
+        kind = MysqlColumnarKind::List;
+        storage.reset();
+        null_count = 0;
+        return 0;
+    }
+
+    int appendList(ExceptionSink* xsink) {
+        ValueHolder value(result.getBoundColumnValue(index), xsink);
+        if (*xsink) {
+            return -1;
+        }
+
+        list->push(value.release(), xsink);
+        if (*xsink) {
+            return -1;
+        }
+        ++row_count;
+        return 0;
+    }
+
+    MyResult& result;
+    int index;
+    std::string name;
+    MysqlColumnarKind kind = MysqlColumnarKind::List;
+    std::shared_ptr<MysqlColumnarStorage> storage;
+    ReferenceHolder<QoreListNode> list;
+    size_t row_count = 0;
+    int64_t null_count = 0;
+    int32_t precision = 0;
+    int32_t scale = 0;
+};
+}
+#endif
 
 int mysql_set_collation(MYSQL* db, const char* collation_str, ExceptionSink* xsink) {
     QoreStringMaker sql("set collation_connection = '%s'", collation_str);
@@ -917,6 +1427,57 @@ int QoreMysqlBindGroup::getDataColumns(QoreHashNode& h, ExceptionSink* xsink, in
     return 0;
 }
 
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+QoreColumnarResult* QoreMysqlBindGroup::getDataColumnar(int max, ExceptionSink* xsink) {
+    std::vector<std::unique_ptr<MysqlColumnarBuilder>> builders;
+    builders.reserve(myres.getNumFields());
+
+    std::unordered_map<std::string, unsigned> seen;
+    for (int i = 0; i < myres.getNumFields(); ++i) {
+        if (i && !(i % 100) && qore_check_cancel(xsink)) {
+            return nullptr;
+        }
+        builders.emplace_back(new MysqlColumnarBuilder(myres, i,
+            mysql_columnar_unique_name(myres.getFieldName(i), ds->getQoreEncoding(), seen), mydata->getNumeric(),
+            xsink));
+    }
+
+    int c = 0;
+    while ((max < 0 || c < max) && !mysql_stmt_fetch(stmt)) {
+        if ((c % 100) == 0 && qore_check_cancel(xsink)) {
+            return nullptr;
+        }
+
+        for (std::unique_ptr<MysqlColumnarBuilder>& builder : builders) {
+            if (builder->append(xsink)) {
+                return nullptr;
+            }
+        }
+        ++c;
+    }
+
+    ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
+    size_t column_index = 0;
+    for (std::unique_ptr<MysqlColumnarBuilder>& builder : builders) {
+        if (column_index && !(column_index % 100) && qore_check_cancel(xsink)) {
+            return nullptr;
+        }
+        h->setKeyValue(builder->getName(), builder->finish(xsink), xsink);
+        if (*xsink) {
+            return nullptr;
+        }
+        ++column_index;
+    }
+
+    ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    return QoreColumnarResult::fromColumnHash(*h, *desc, xsink);
+}
+#endif
+
 QoreValue QoreMysqlBindGroup::exec(ExceptionSink* xsink, bool cols) {
     if (execIntern(xsink))
         return QoreValue();
@@ -1018,24 +1579,13 @@ QoreColumnarResult* QoreMysqlBindGroup::selectColumnar(ExceptionSink* xsink) {
         return nullptr;
     }
 
-    ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
-
     if (myres.bind(stmt)) {
         xsink->raiseException("DBI:MYSQL:BIND-ERROR", "error binding result columns: %s",
             mysql_stmt_error(stmt));
         return nullptr;
     }
 
-    if (getDataColumns(**h, xsink, -1, true)) {
-        return nullptr;
-    }
-
-    ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
-    if (*xsink) {
-        return nullptr;
-    }
-
-    return QoreColumnarResult::fromColumnHash(*h, *desc, xsink);
+    return getDataColumnar(-1, xsink);
 }
 #endif
 
@@ -1266,6 +1816,12 @@ QoreHashNode* QoreMysqlPreparedStatement::fetchColumns(int rows, ExceptionSink *
    return !getDataColumns(**h, xsink, rows) ? h.release() : 0;
 }
 
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+QoreColumnarResult* QoreMysqlPreparedStatement::fetchColumnar(int rows, ExceptionSink *xsink) {
+   return getDataColumnar(rows, xsink);
+}
+#endif
+
 QoreHashNode* QoreMysqlBindGroup::describe(ExceptionSink *xsink) {
    if (!myres) {
       xsink->raiseException("DBI:MYSQL-DESCRIBE-ERROR", "call SQLStatement::next() before calling SQLStatement::describe()");
@@ -1279,13 +1835,20 @@ QoreHashNode* QoreMysqlBindGroup::describe(ExceptionSink *xsink) {
    QoreString typestr("type");
    QoreString dbtypestr("native_type");
    QoreString internalstr("internal_id");
+   QoreString nullablestr("nullable");
+   QoreString precisionstr("precision");
+   QoreString scalestr("scale");
 
    // copy data or perform per-value processing if needed
    for (int i = 0; i < myres.getNumFields(); ++i) {
+      if (i && !(i % 100) && qore_check_cancel(xsink)) {
+         return 0;
+      }
       ReferenceHolder<QoreHashNode> col(new QoreHashNode, xsink);
       col->setKeyValue(namestr, new QoreStringNode(myres.getFieldName(i)), xsink);
       col->setKeyValue(maxsizestr, myres.getFieldMaxLength(i), xsink);
       col->setKeyValue(internalstr, myres.getFieldType(i), xsink);
+      col->setKeyValue(nullablestr, !(myres.getFieldFlags(i) & NOT_NULL_FLAG), xsink);
       switch (myres.getFieldType(i)) {
       case MYSQL_TYPE_TINY:            // TINYINT field
          col->setKeyValue(typestr, NT_INT, xsink);
@@ -1310,6 +1873,20 @@ QoreHashNode* QoreMysqlBindGroup::describe(ExceptionSink *xsink) {
       case MYSQL_TYPE_DECIMAL:         // DECIMAL or NUMERIC field
       case MYSQL_TYPE_NEWDECIMAL:      // Precision math DECIMAL or NUMERIC
          col->setKeyValue(typestr, NT_NUMBER, xsink);
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+         {
+            int32_t precision = 0;
+            int32_t scale = 0;
+            if (mysql_columnar_decimal_metadata_supported(myres.getFieldMaxLength(i), myres.getFieldDecimals(i),
+                    myres.getFieldFlags(i), precision, scale)) {
+               QoreStringMaker native_type("NUMERIC(%d,%d)", precision, scale);
+               col->setKeyValue(dbtypestr, new QoreStringNode(native_type.c_str()), xsink);
+               col->setKeyValue(precisionstr, precision, xsink);
+               col->setKeyValue(scalestr, scale, xsink);
+               break;
+            }
+         }
+#endif
          col->setKeyValue(dbtypestr, new QoreStringNode("NUMERIC"), xsink);
          break;
       case MYSQL_TYPE_FLOAT:           // FLOAT field
@@ -1477,17 +2054,7 @@ static QoreColumnarResult* mysql_stmt_api_fetch_columnar(SQLStatement* stmt, int
    QoreMysqlPreparedStatement* bg = (QoreMysqlPreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
-   ReferenceHolder<QoreHashNode> columns(bg->fetchColumns(rows, xsink), xsink);
-   if (*xsink || !columns) {
-      return nullptr;
-   }
-
-   ReferenceHolder<QoreHashNode> desc(bg->describe(xsink), xsink);
-   if (*xsink) {
-      return nullptr;
-   }
-
-   return QoreColumnarResult::fromColumnHash(*columns, *desc, xsink);
+   return bg->fetchColumnar(rows, xsink);
 }
 #endif
 

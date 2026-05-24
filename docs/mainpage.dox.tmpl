@@ -40,6 +40,10 @@ Datasource db(SQL::DSMySQL, user, pass, db, encoding, hostname, port);
     When built against a %Qore library with columnar DBI support, the driver implements
     \c Datasource::selectColumnar() and \c SQLStatement::fetchColumnar() to return
     \c Qore::SQL::ColumnarResult objects suitable for DataFrame and analytical workloads.
+    Integer and floating-point result columns are returned as dense \c buffer<int64>
+    and \c buffer<float64> values. Safe \c DECIMAL(p,s) / \c NUMERIC(p,s) values
+    with precision up to 38 are returned as \c buffer<decimal128> when number
+    results are not configured as strings.
 
     If a connection times out while not in a transaction, the connection will be automatically reconnected.
 
@@ -194,6 +198,8 @@ hash: (1 member)
     - added comprehensive negative test cases for better test coverage
     - added columnar DBI result support with \c Datasource::selectColumnar() and
       \c SQLStatement::fetchColumnar() when built against %Qore with columnar DBI APIs
+    - optimized columnar DBI results to return dense buffers for integer, floating-point,
+      and safe \c DECIMAL(p,s) / \c NUMERIC(p,s) columns
 
     @subsection mysql2021 mysql Driver Version 2.0.2.1
     <b>New Features and Bug Fixes</b>

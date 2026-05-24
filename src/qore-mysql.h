@@ -117,6 +117,22 @@ public:
    DLLLOCAL int bind(MYSQL_STMT *stmt);
    DLLLOCAL QoreValue getBoundColumnValue(int i, bool destructive = false);
 
+   DLLLOCAL bool isColumnNull(int i) const {
+      return bi[i].mnull;
+   }
+
+   DLLLOCAL int64 getBoundInt64Value(int i) const {
+      return *static_cast<int64*>(bindbuf[i].buffer);
+   }
+
+   DLLLOCAL double getBoundDoubleValue(int i) const {
+      return *static_cast<double*>(bindbuf[i].buffer);
+   }
+
+   DLLLOCAL const char* getBoundStringValue(int i) const {
+      return static_cast<const char*>(bindbuf[i].buffer);
+   }
+
    DLLLOCAL char *getFieldName(int i) {
       return field[i].name;
    }
@@ -127,6 +143,14 @@ public:
 
    DLLLOCAL enum_field_types getFieldType(int i) {
       return field[i].type;
+   }
+
+   DLLLOCAL unsigned int getFieldDecimals(int i) const {
+      return field[i].decimals;
+   }
+
+   DLLLOCAL unsigned int getFieldFlags(int i) const {
+      return field[i].flags;
    }
 
    DLLLOCAL int getNumFields() {
@@ -412,6 +436,9 @@ protected:
 
     DLLLOCAL int getDataRows(QoreListNode& l, ExceptionSink* xsink, int max = -1);
     DLLLOCAL int getDataColumns(QoreHashNode& h, ExceptionSink* xsink, int max = -1, bool cols = false);
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+    DLLLOCAL QoreColumnarResult* getDataColumnar(int max, ExceptionSink* xsink);
+#endif
 
     DLLLOCAL ~QoreMysqlBindGroup() {
         assert(!head);
@@ -498,6 +525,9 @@ public:
     DLLLOCAL QoreHashNode* fetchRow(ExceptionSink* xsink);
     DLLLOCAL QoreListNode* fetchRows(int rows, ExceptionSink* xsink);
     DLLLOCAL QoreHashNode* fetchColumns(int rows, ExceptionSink* xsink);
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+    DLLLOCAL QoreColumnarResult* fetchColumnar(int rows, ExceptionSink* xsink);
+#endif
     DLLLOCAL bool next();
 };
 
