@@ -604,57 +604,70 @@ class MysqlTest inherits QUnit::Test {
         return value.type() == Type::List ? value : value.toList();
     }
 
+    bool isMissingColumnarApi(hash<ExceptionInfo> ex) {
+        return ex.err == "METHOD-DOES-NOT-EXIST" || ex.err == "UNKNOWN-METHOD";
+    }
+
     columnarResultTest() {
         Datasource db(connstr);
 
-        ColumnarResult direct = db.selectColumnar("select family_id, name from family order by family_id");
-        assertEq(2, direct.numRows());
-        assertEq(2, direct.numCols());
-        assertEq("buffer<int64>", direct.getColumn("family_id").fullType());
-        assertEq((1, 2), asList(direct.getColumn("family_id")));
-        assertEq(("Smith", "Jones"), asList(direct.getColumn("name")));
+        try {
+            auto columnar_db = db;
+            auto direct = columnar_db.selectColumnar("select family_id, name from family order by family_id");
+            assertEq(2, direct.numRows());
+            assertEq(2, direct.numCols());
+            assertEq("buffer<int64>", direct.getColumn("family_id").fullType());
+            assertEq((1, 2), asList(direct.getColumn("family_id")));
+            assertEq(("Smith", "Jones"), asList(direct.getColumn("name")));
 
-        ColumnarResult empty = db.selectColumnar("select family_id, name from family where family_id < 0");
-        assertEq(0, empty.numRows());
-        assertEq(2, empty.numCols());
-        assertEq(("family_id", "name"), empty.columnNames());
-        assertEq("buffer<int64>", empty.getColumn("family_id").fullType());
+            auto empty = columnar_db.selectColumnar("select family_id, name from family where family_id < 0");
+            assertEq(0, empty.numRows());
+            assertEq(2, empty.numCols());
+            assertEq(("family_id", "name"), empty.columnNames());
+            assertEq("buffer<int64>", empty.getColumn("family_id").fullType());
 
-        ColumnarResult nullable = db.selectColumnar(
-            "select cast(null as signed) as id union all select cast(42 as signed) as id order by id");
-        assertEq("buffer<*int64>", nullable.getColumn("id").fullType());
-        assertEq((NOTHING, 42), asList(nullable.getColumn("id")));
+            auto nullable = columnar_db.selectColumnar(
+                "select cast(null as signed) as id union all select cast(42 as signed) as id order by id");
+            assertEq("buffer<*int64>", nullable.getColumn("id").fullType());
+            assertEq((NOTHING, 42), asList(nullable.getColumn("id")));
 
-        ColumnarResult floats = db.selectColumnar(
-            "select cast(1.5 as double) as score union all select cast(2.25 as double) as score order by score");
-        assertEq("buffer<float64>", floats.getColumn("score").fullType());
-        assertEq((1.5, 2.25), asList(floats.getColumn("score")));
+            auto floats = columnar_db.selectColumnar(
+                "select cast(1.5 as double) as score union all select cast(2.25 as double) as score order by score");
+            assertEq("buffer<float64>", floats.getColumn("score").fullType());
+            assertEq((1.5, 2.25), asList(floats.getColumn("score")));
 
-        ColumnarResult denseDecimals = db.selectColumnar("
-            select cast(null as decimal(18,2)) as amount
-            union all select cast(1.50 as decimal(18,2)) as amount
-            union all select cast(2.25 as decimal(18,2)) as amount
-            order by amount");
-        assertEq("buffer<*decimal128>", denseDecimals.getColumn("amount").fullType());
-        assertEq((NOTHING, 1.5n, 2.25n), asList(denseDecimals.getColumn("amount")));
-        list<hash<auto>> decimalSchema = denseDecimals.schemaV2();
-        assertEq("decimal128", decimalSchema[0].kind);
-        assertEq(18, decimalSchema[0].precision);
-        assertEq(2, decimalSchema[0].scale);
+            auto denseDecimals = columnar_db.selectColumnar("
+                select cast(null as decimal(18,2)) as amount
+                union all select cast(1.50 as decimal(18,2)) as amount
+                union all select cast(2.25 as decimal(18,2)) as amount
+                order by amount");
+            assertEq("buffer<*decimal128>", denseDecimals.getColumn("amount").fullType());
+            assertEq((NOTHING, 1.5n, 2.25n), asList(denseDecimals.getColumn("amount")));
+            list<hash<auto>> decimalSchema = denseDecimals.schemaV2();
+            assertEq("decimal128", decimalSchema[0].kind);
+            assertEq(18, decimalSchema[0].precision);
+            assertEq(2, decimalSchema[0].scale);
 
-        SQLStatement stmt(db);
-        on_error stmt.rollback();
-        stmt.prepare("select person_id, name from people order by person_id");
-        stmt.exec();
-        ColumnarResult first = stmt.fetchColumnar(rows: 3);
-        ColumnarResult rest = stmt.fetchColumnar(rows: -1);
-        assertEq(3, first.numRows());
-        assertEq(4, rest.numRows());
-        assertEq("buffer<int64>", first.getColumn("person_id").fullType());
-        assertEq("buffer<int64>", rest.getColumn("person_id").fullType());
-        assertEq((1, 2, 3), asList(first.getColumn("person_id")));
-        assertEq((4, 5, 6, 7), asList(rest.getColumn("person_id")));
-        stmt.commit();
+            SQLStatement stmt(db);
+            on_error stmt.rollback();
+            stmt.prepare("select person_id, name from people order by person_id");
+            stmt.exec();
+            auto columnar_stmt = stmt;
+            auto first = columnar_stmt.fetchColumnar(3);
+            auto rest = columnar_stmt.fetchColumnar(-1);
+            assertEq(3, first.numRows());
+            assertEq(4, rest.numRows());
+            assertEq("buffer<int64>", first.getColumn("person_id").fullType());
+            assertEq("buffer<int64>", rest.getColumn("person_id").fullType());
+            assertEq((1, 2, 3), asList(first.getColumn("person_id")));
+            assertEq((4, 5, 6, 7), asList(rest.getColumn("person_id")));
+            stmt.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            if (isMissingColumnarApi(ex)) {
+                testSkip("Qore columnar DBI APIs are not available in this Qore build");
+            }
+            rethrow;
+        }
     }
 
     # Test type conversion for various MySQL types
