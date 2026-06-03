@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2025 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -151,6 +151,12 @@ public:
 
    DLLLOCAL unsigned int getFieldFlags(int i) const {
       return field[i].flags;
+   }
+
+   // a charset number of 63 ("binary") marks BINARY/VARBINARY/BLOB columns;
+   // see getBoundColumnValue(), which returns binary values for such columns
+   DLLLOCAL unsigned int getFieldCharsetnr(int i) const {
+      return field[i].charsetnr;
    }
 
    DLLLOCAL int getNumFields() {

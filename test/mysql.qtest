@@ -118,6 +118,7 @@ class MysqlTest inherits QUnit::Test {
         addTestCase("prepared statement test", \preparedStatementTest());
         addTestCase("empty result test", \emptyResultTest());
         addTestCase("columnar result test", \columnarResultTest());
+        addTestCase("columnar binary/year test", \columnarBinaryYearTest());
         addTestCase("type conversion test", \typeConversionTest());
         addTestCase("binary data test", \binaryDataTest());
         addTestCase("number options test", \numberOptionsTest());
@@ -662,6 +663,52 @@ class MysqlTest inherits QUnit::Test {
             assertEq((1, 2, 3), asList(first.getColumn("person_id")));
             assertEq((4, 5, 6, 7), asList(rest.getColumn("person_id")));
             stmt.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            if (isMissingColumnarApi(ex)) {
+                testSkip("Qore columnar DBI APIs are not available in this Qore build");
+            }
+            rethrow;
+        }
+    }
+
+    # Regression: columnar fetch of binary (BINARY/VARBINARY/BLOB) and YEAR columns.
+    # describe() used to report all string-family columns as string and YEAR as date,
+    # while the value extraction correctly returns binary (charsetnr 63) and int.
+    # The columnar result builder types its buffers from describe(), so the mismatch
+    # raised BUFFER-TYPE-ERROR ('binary' into buffer<string>) and COLUMNAR-RESULT-ERROR
+    # (int into a temporal column) -- only surfaced via the columnar API, not row fetch.
+    columnarBinaryYearTest() {
+        Datasource db(connstr);
+
+        on_exit {
+            try { db.exec("drop table columnar_bin_year_test"); } catch () {}
+            db.commit();
+        }
+
+        try {
+            db.exec("create table columnar_bin_year_test ("
+                "id int not null, vc varchar(20), vb varbinary(10), bl blob, yr year)");
+            db.commit();
+            db.exec("insert into columnar_bin_year_test values (1, %v, %v, %v, 2016)", "hello", <bead>, <cafe>);
+            db.exec("insert into columnar_bin_year_test values (2, %v, %v, %v, 2024)", "world", <beef>, <f00d>);
+            db.commit();
+
+            auto cols = db.selectColumnar("select id, vc, vb, bl, yr from columnar_bin_year_test order by id");
+            assertEq(2, cols.numRows());
+
+            # control: a real string column stays string
+            assertEq(("hello", "world"), asList(cols.getColumn("vc")));
+            assertEq(Type::String, asList(cols.getColumn("vc"))[0].type());
+
+            # binary columns must round-trip as binary (was: 'binary' into buffer<string>)
+            assertEq((<bead>, <beef>), asList(cols.getColumn("vb")));
+            assertEq(Type::Binary, asList(cols.getColumn("vb"))[0].type());
+            assertEq((<cafe>, <f00d>), asList(cols.getColumn("bl")));
+            assertEq(Type::Binary, asList(cols.getColumn("bl"))[0].type());
+
+            # YEAR must be an integer, not a date (was: int into a temporal column)
+            assertEq((2016, 2024), asList(cols.getColumn("yr")));
+            assertEq(Type::Int, asList(cols.getColumn("yr"))[0].type());
         } catch (hash<ExceptionInfo> ex) {
             if (isMissingColumnarApi(ex)) {
                 testSkip("Qore columnar DBI APIs are not available in this Qore build");

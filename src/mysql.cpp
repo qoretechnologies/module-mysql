@@ -1918,20 +1918,44 @@ QoreHashNode* QoreMysqlBindGroup::describe(ExceptionSink *xsink) {
          col->setKeyValue(dbtypestr, new QoreStringNode("DATETIME"), xsink);
          break;
       case MYSQL_TYPE_YEAR:            // YEAR field
-         col->setKeyValue(typestr, NT_DATE, xsink);
+         // bind() binds YEAR as MYSQL_TYPE_LONGLONG and getBoundColumnValue()
+         // returns an integer for it, so the described type must be NT_INT to
+         // match (it is not returned as a date value)
+         col->setKeyValue(typestr, NT_INT, xsink);
          col->setKeyValue(dbtypestr, new QoreStringNode("YEAR"), xsink);
          break;
+      // for the three string-family types a charset number of 63 ("binary")
+      // means the column is the binary variant (BINARY/VARBINARY/BLOB) and
+      // getBoundColumnValue() returns a binary value for it, so the described
+      // type must be NT_BINARY to match -- otherwise the columnar result builder
+      // (QoreColumnarResult::fromColumnHash()) creates a buffer<string> and then
+      // fails to assign the binary values into it.
       case MYSQL_TYPE_STRING:          // CHAR or BINARY field
-         col->setKeyValue(typestr, NT_STRING, xsink);
-         col->setKeyValue(dbtypestr, new QoreStringNode("CHAR"), xsink);
+         if (myres.getFieldCharsetnr(i) == 63) {
+            col->setKeyValue(typestr, NT_BINARY, xsink);
+            col->setKeyValue(dbtypestr, new QoreStringNode("BINARY"), xsink);
+         } else {
+            col->setKeyValue(typestr, NT_STRING, xsink);
+            col->setKeyValue(dbtypestr, new QoreStringNode("CHAR"), xsink);
+         }
          break;
       case MYSQL_TYPE_VAR_STRING:      // VARCHAR or VARBINARY field
-         col->setKeyValue(typestr, NT_STRING, xsink);
-         col->setKeyValue(dbtypestr, new QoreStringNode("VARCHAR"), xsink);
+         if (myres.getFieldCharsetnr(i) == 63) {
+            col->setKeyValue(typestr, NT_BINARY, xsink);
+            col->setKeyValue(dbtypestr, new QoreStringNode("VARBINARY"), xsink);
+         } else {
+            col->setKeyValue(typestr, NT_STRING, xsink);
+            col->setKeyValue(dbtypestr, new QoreStringNode("VARCHAR"), xsink);
+         }
          break;
       case MYSQL_TYPE_BLOB:            // BLOB or TEXT field (use max_length to determine the maximum length)
-         col->setKeyValue(typestr, NT_STRING, xsink);
-         col->setKeyValue(dbtypestr, new QoreStringNode("TEXT"), xsink);
+         if (myres.getFieldCharsetnr(i) == 63) {
+            col->setKeyValue(typestr, NT_BINARY, xsink);
+            col->setKeyValue(dbtypestr, new QoreStringNode("BLOB"), xsink);
+         } else {
+            col->setKeyValue(typestr, NT_STRING, xsink);
+            col->setKeyValue(dbtypestr, new QoreStringNode("TEXT"), xsink);
+         }
          break;
       case MYSQL_TYPE_SET:             // SET field
       case MYSQL_TYPE_ENUM:            // ENUM field
