@@ -240,7 +240,7 @@ static DateTimeNode* qore_mysql_makedt(const QoreMysqlConnection& conn, int year
     return DateTimeNode::makeAbsolute(conn.getTZ(), year, month, day, hour, minute, second, us);
 }
 
-static MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
+MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
     printd(5, "qore_mysql_init() datasource %p for DB: %s\n", ds, ds->getDBName() ? ds->getDBName() : "unknown");
 
     if (!ds->getDBName()) {
@@ -271,6 +271,15 @@ static MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
         xsink->outOfMemory();
         return 0;
     }
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+    unsigned int local_infile = 1;
+    if (mysql_options(db, MYSQL_OPT_LOCAL_INFILE, &local_infile)) {
+        xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not enable guarded LOCAL INFILE support: %s",
+            mysql_error(db));
+        mysql_close(db);
+        return nullptr;
+    }
+#endif
     int port = ds->getPort();
 
     if (!port && ds->getHostName())
@@ -822,6 +831,14 @@ static int qore_mysql_commit(Datasource* ds, ExceptionSink* xsink) {
     check_init();
     QoreMysqlConnection* d_mysql = (QoreMysqlConnection*)ds->getPrivateData();
 
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+    if (d_mysql->bulk_load) {
+        xsink->raiseException("DBI:MYSQL:BULK-LOAD-ERROR",
+            "cannot commit while a native MySQL bulk load is active");
+        return -1;
+    }
+#endif
+
     // calls mysql_commit() on the connection
     if (d_mysql->commit()) {
         xsink->raiseException("DBI:MYSQL:COMMIT-ERROR", d_mysql->error());
@@ -838,6 +855,12 @@ static int qore_mysql_rollback(Datasource* ds, ExceptionSink* xsink) {
 #ifdef HAVE_MYSQL_COMMIT
     check_init();
     QoreMysqlConnection *d_mysql =(QoreMysqlConnection *)ds->getPrivateData();
+
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+    if (d_mysql->bulk_load && d_mysql->bulkLoadEnd(false, xsink)) {
+        return -1;
+    }
+#endif
 
     // calls mysql_rollback() on the connection
     if (d_mysql->rollback()) {
@@ -2458,6 +2481,21 @@ static QoreValue qore_mysql_execRaw(Datasource *ds, const QoreString* qstr, Exce
     return qore_mysql_do_sql(conn, qstr, 0, xsink);
 }
 
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+static int qore_mysql_bulk_load_begin(Datasource* ds, const QoreString* table, const QoreListNode* columns,
+        const QoreHashNode* options, ExceptionSink* xsink) {
+    return ds->getPrivateDataRef<QoreMysqlConnection>().bulkLoadBegin(table, columns, options, xsink);
+}
+
+static int qore_mysql_bulk_load_rows(Datasource* ds, const QoreHashNode* rows, ExceptionSink* xsink) {
+    return ds->getPrivateDataRef<QoreMysqlConnection>().bulkLoadRows(rows, xsink);
+}
+
+static int qore_mysql_bulk_load_end(Datasource* ds, bool success, ExceptionSink* xsink) {
+    return ds->getPrivateDataRef<QoreMysqlConnection>().bulkLoadEnd(success, xsink);
+}
+#endif
+
 static int qore_mysql_open_datasource(Datasource* ds, ExceptionSink* xsink) {
     check_init();
 
@@ -2534,6 +2572,11 @@ static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xs
     methods.add(QDBI_METHOD_SELECT_ROW,         qore_mysql_select_row);
     methods.add(QDBI_METHOD_EXEC,               qore_mysql_exec);
     methods.add(QDBI_METHOD_EXECRAW,            qore_mysql_execRaw);
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+    methods.add(QDBI_METHOD_BULK_LOAD_BEGIN,    qore_mysql_bulk_load_begin);
+    methods.add(QDBI_METHOD_BULK_LOAD_ROWS,     qore_mysql_bulk_load_rows);
+    methods.add(QDBI_METHOD_BULK_LOAD_END,      qore_mysql_bulk_load_end);
+#endif
     methods.add(QDBI_METHOD_COMMIT,             qore_mysql_commit);
     methods.add(QDBI_METHOD_ROLLBACK,           qore_mysql_rollback);
     methods.add(QDBI_METHOD_GET_SERVER_VERSION, qore_mysql_get_server_version);

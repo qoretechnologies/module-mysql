@@ -9,7 +9,8 @@ endif
 .qpp.cpp:
 	$(QPP) -V $<
 
-MYSQL_SOURCES = mysql.cpp
+MYSQL_SOURCES = mysql.cpp \
+	QoreMysqlBulkLoad.cpp
 
 lib_LTLIBRARIES = mysql.la
 mysql_la_SOURCES = $(MYSQL_SOURCES)
@@ -34,4 +35,3 @@ endif
 install-exec-hook:
 	mv $(DESTDIR)$(libdir)/$(MNAME).$(MODULE_SUFFIX) $(DESTDIR)$(libdir)/$(MNAME)-api-$(MODULE_API).qmod
 	rm -f $(DESTDIR)$(libdir)/$(MNAME).la $(DESTDIR)$(libdir)/$(MNAME).a $(RM_OTHER)
-

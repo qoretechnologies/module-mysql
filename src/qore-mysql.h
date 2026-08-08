@@ -34,6 +34,11 @@
 
 #include <string>
 
+#if defined(QDBI_METHOD_BULK_LOAD_BEGIN) && defined(HAVE_MYSQL_SET_LOCAL_INFILE_HANDLER) \
+        && defined(HAVE_MYSQL_OPT_LOCAL_INFILE) && defined(HAVE_MYSQL_COMMIT)
+#define QORE_MYSQL_HAVE_BULK_LOAD
+#endif
+
 class QoreColumnarResult;
 
 #if defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80000 && !defined(LIBMARIADB) && !defined(MARIADB_BASE_VERSION)
@@ -47,6 +52,9 @@ typedef bool my_bool;
 #define MYSQL_OPT_COLLATION "collation"
 
 class QoreMysqlConnection;
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+class QoreMysqlBulkLoadState;
+#endif
 
 class MyResult {
 private:
@@ -234,8 +242,8 @@ public:
     DLLLOCAL int bindValue(const QoreMysqlConnection& conn, MYSQL_BIND *buf, ExceptionSink* xsink);
 };
 
-static MYSQL* qore_mysql_init(Datasource *ds, ExceptionSink* xsink);
-static int mysql_set_collation(MYSQL* db, const char* collation_str, ExceptionSink* xsink);
+DLLLOCAL MYSQL* qore_mysql_init(Datasource *ds, ExceptionSink* xsink);
+DLLLOCAL int mysql_set_collation(MYSQL* db, const char* collation_str, ExceptionSink* xsink);
 
 static inline bool wasInTransaction(Datasource *ds) {
 #ifdef _QORE_HAS_DATASOURCE_ACTIVETRANSACTION
@@ -264,14 +272,30 @@ public:
     const AbstractQoreZoneInfo* server_tz;
     int numeric_support;
     std::string collation;
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+    QoreMysqlBulkLoadState* bulk_load;
+#endif
 
     DLLLOCAL QoreMysqlConnection(MYSQL* d, Datasource& n_ds)
         : db(d), ds(n_ds),
         server_tz(currentTZ()),
-        numeric_support(OPT_NUM_DEFAULT) {
+        numeric_support(OPT_NUM_DEFAULT)
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+        , bulk_load(nullptr)
+#endif
+        {
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+        installLocalInfileHandler();
+#endif
     }
 
     DLLLOCAL ~QoreMysqlConnection() {
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+        if (bulk_load) {
+            ExceptionSink xsink;
+            bulkLoadEnd(false, &xsink);
+        }
+#endif
         mysql_close(db);
     }
 
@@ -292,6 +316,9 @@ public:
         printd(5, "mysql datasource %08p reconnected after timeout\n", ds);
         mysql_close(db);
         db = new_db;
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+        installLocalInfileHandler();
+#endif
 
         if (wasInTransaction(ds))
             return -1;
@@ -405,6 +432,38 @@ public:
     DLLLOCAL const AbstractQoreZoneInfo* getTZ() const {
         return server_tz;
     }
+
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+    /** Installs the deny-by-default LOCAL INFILE callback dispatcher. */
+    DLLLOCAL void installLocalInfileHandler();
+
+    /** Starts a callback-driven native bulk load.
+        @param table target table name
+        @param columns ordered target column names
+        @param options native bulk-load options, or `nullptr`
+        @param xsink exception sink
+        @return 0 when native loading started, 1 when dynamically unavailable, -1 on error
+        @throw DBI:MYSQL:BULK-LOAD-ERROR for invalid input or MySQL failures
+    */
+    DLLLOCAL int bulkLoadBegin(const QoreString* table, const QoreListNode* columns,
+        const QoreHashNode* options, ExceptionSink* xsink);
+
+    /** Loads one hash-of-columns block with an in-memory LOCAL INFILE callback.
+        @param rows hash of column names to equally-sized lists or broadcast scalar values
+        @param xsink exception sink
+        @return 0 on success, -1 on error
+        @throw DBI:MYSQL:BULK-LOAD-ERROR for invalid rows, callback refusal, or MySQL failures
+    */
+    DLLLOCAL int bulkLoadRows(const QoreHashNode* rows, ExceptionSink* xsink);
+
+    /** Releases or rolls back the internal native-load savepoint.
+        @param success `true` to keep the loaded rows, `false` to roll them back
+        @param xsink exception sink
+        @return 0 on success, -1 on error
+        @throw DBI:MYSQL:BULK-LOAD-ERROR when savepoint cleanup fails
+    */
+    DLLLOCAL int bulkLoadEnd(bool success, ExceptionSink* xsink);
+#endif
 };
 
 class QoreMysqlBindGroup {

@@ -6,6 +6,7 @@
     - @ref mysqlintro
     - @ref mysqloptions
     - @ref mysqltrans
+    - @ref mysqlnativebulkload
     - @ref mysqlbind
     - @ref mysqlstoredprocs
     - @ref mysqlreleasenotes
@@ -34,6 +35,7 @@ Datasource db(SQL::DSMySQL, user, pass, db, encoding, hostname, port);
     - \c DBI_CAP_HAS_OPTION_SUPPORT
     - \c DBI_CAP_SERVER_TIME_ZONE
     - \c DBI_CAP_HAS_COLUMNAR_SELECT
+    - \c DBI_CAP_HAS_BULK_LOAD
 
     The driver uses MySQL's prepared statement interface when it is available (must be compiled with MySQL 4 or better).
 
@@ -59,6 +61,65 @@ major_version * 10000 + minor_version * 100 + sub_version
 
     Like all Qore components, the MySQL DBI driver is thread-safe.
 
+    @section mysqlnativebulkload Native LOAD DATA Bulk Loading
+
+    When built against a %Qore library with the native bulk-load DBI API and a compatible MySQL or
+    MariaDB client library, this driver implements \c DBI_CAP_HAS_BULK_LOAD with callback-driven
+    \c LOAD \c DATA \c LOCAL \c INFILE.  No file is created or read: each BulkSqlUtil block is
+    serialized in memory and supplied synchronously through \c mysql_set_local_infile_handler().
+    The native path is insert-only and remains explicitly opt-in.
+
+    @code
+%requires BulkSqlUtil
+%requires SqlUtil
+
+Datasource ds("mysql:user/password@db%host:3306");
+SqlUtil::AbstractTable table = (new SqlUtil::Table(ds, "event_log")).getTable();
+BulkSqlUtil::BulkInsertOperation op(table, {
+    "bulk_load": True,       # require native loading; "auto" permits fallback
+    "block_size": 1000,
+});
+on_error {
+    op.discard();
+    ds.rollback();
+}
+map op.queueData($1), events.iterator();
+op.flush();
+op.endStream();
+ds.commit();
+    @endcode
+
+    Native loading is dynamically available only when the server's global \c local_infile setting is
+    enabled and the target table uses the transactional \c InnoDB or \c XtraDB engine. Table and
+    column names must be simple, unquoted MySQL identifiers; a table may be qualified once by its
+    schema. \c "bulk_load": \c "auto" uses the ordinary insert path when these conditions are not
+    met, while \c True reports that the required native path is unavailable.
+
+    The driver supports NULL, boolean, integer, finite floating-point, arbitrary-precision number,
+    string, binary, and absolute date/time Qore values. Strings and binary data preserve NUL, tab,
+    newline, carriage-return, backslash, and Control-Z bytes through MySQL's text-load escaping.
+    Relative date/time values and container/object values are rejected by the native serializer.
+    Identifiers are limited to MySQL's 64-byte per-component maximum.
+    MySQL warnings, including conversion and duplicate-key warnings, fail the operation so that the
+    internal savepoint can roll the entire native load back instead of silently accepting partial or
+    truncated data.
+
+    A savepoint spans all native blocks. Successful completion releases the savepoint but does not
+    commit; the loaded rows participate in the caller's transaction and can still be rolled back with
+    \c Datasource::rollback(). Aborting the operation rolls back only to the internal savepoint, so
+    transaction work performed before the bulk load is preserved. Connection close and explicit
+    transaction rollback abort an active native load, and commit is rejected while one is active.
+
+    The driver owns mutation-observer stream events on the native path. Consumed bytes are the exact
+    callback payload, including field separators, line terminators, and extra escape bytes. The
+    ordinary fallback remains owned by BulkSqlUtil. The only supported native option is the common
+    \c "stream_bounds" boolean passed by BulkSqlUtil.
+
+    @note Connections built with native support enable the client protocol capability required by
+    \c LOCAL \c INFILE, but install a permanent deny-by-default callback. Raw SQL cannot make the
+    client read an arbitrary local path; only the internal in-memory source is exposed while a native
+    bulk block is active.
+
     @section mysqloptions Driver Options
 
     When compiled again Qore 0.8.6+ the mysql driver support the following DBI options:
@@ -81,7 +142,7 @@ major_version * 10000 + minor_version * 100 + sub_version
 
     @subsection mysql_number_options Number Options
 
-    The number options (\c "optimal-numbers", \c "string-numbers", and \c "numeric-numbers") are all mutually-exclusive; setting one automatically disables the others.   These options also ignore their arguments; the last one set takes effect (also note that setting it with any value sets the option, even @ref False).
+    The number options (\c "optimal-numbers", \c "string-numbers", and \c "numeric-numbers") are all mutually-exclusive; setting one automatically disables the others.   These options also ignore their arguments; the last one set takes effect (also note that setting it with any value sets the option, even \c False).
 
     The default if no other option is explicitly set is \c "optimal-numbers".  Note that this represents a change from previous versions where \c NUMERIC or \c DECIMAL values were returned as strings in order to avoid the loss of information.  To set the old behavior, set the \c "string-numbers" option when creating the \c Datasource or \c DatasourcePool object.
 
@@ -151,7 +212,7 @@ date now = db.selectRow("select current_timestamp into :time").time;
 
     @subsection mysql_binding_by_value Binding By Value
 
-    |QoreType|!MySQL Type|!Description
+    |!Qore Type|!MySQL Type|!Description
     |<tt>Type::String</tt>|<tt>MYSQL_TYPE_STRING</tt>|string data is mapped directly after any character encoding conversions (if necessary)
     |<tt>Type::Date</tt>|<tt>MYSQL_TYPE_DATETIME</tt>|direct mapping of data
     |<tt>Type::Binary</tt>|<tt>MYSQL_TYPE_BLOB</tt>|direct mapping of data
@@ -187,6 +248,14 @@ hash: (1 member)
     @endcode
 
     @section mysqlreleasenotes Release Notes
+
+    @subsection mysql2_2 mysql Driver Version 2.2
+    - added opt-in callback-driven native bulk loading with \c DBI_CAP_HAS_BULK_LOAD
+    - added transactional multi-block cleanup with an internal savepoint, strict warning handling,
+      exact callback-payload stream accounting, and cooperative cancellation
+    - added dynamic fallback when server \c local_infile is disabled, the table engine is not
+      transactional, or identifiers are not eligible
+    - denied arbitrary client-side file reads from raw \c LOAD \c DATA \c LOCAL \c INFILE SQL
 
     @subsection mysql2_1 mysql Driver Version 2.1
     <b>New Features and Bug Fixes</b>

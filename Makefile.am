@@ -8,6 +8,7 @@ noinst_HEADERS = src/qore-mysql.h \
 EXTRA_DIST = COPYING.LGPL COPYING.GPL ChangeLog AUTHORS README \
 	RELEASE-NOTES \
 	test/db-test.q \
+	test/mysql-native-bulk-load.qtest \
 	test/sql-stmt.q \
 	qore-mysql-module.spec
 

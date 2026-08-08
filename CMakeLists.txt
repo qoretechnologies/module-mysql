@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5...3.29)
 
-project(qore-mysql-module VERSION 2.1)
+project(qore-mysql-module VERSION 2.2)
 
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
@@ -47,6 +47,13 @@ check_cxx_symbol_exists(mysql_stmt_prepare mysql.h HAVE_MYSQL_STMT)
 check_cxx_symbol_exists(mysql_commit mysql.h HAVE_MYSQL_COMMIT)
 check_cxx_symbol_exists(mysql_set_character_set mysql.h HAVE_MYSQL_SET_CHARACTER_SET)
 check_cxx_symbol_exists(mysql_library_init mysql.h HAVE_MYSQL_LIBRARY_INIT)
+check_cxx_symbol_exists(mysql_set_local_infile_handler mysql.h HAVE_MYSQL_SET_LOCAL_INFILE_HANDLER)
+check_cxx_source_compiles("
+#include <mysql.h>
+int main(void) {
+    enum mysql_option option = MYSQL_OPT_LOCAL_INFILE;
+    return static_cast<int>(option);
+}" HAVE_MYSQL_OPT_LOCAL_INFILE)
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_LIBRARIES)
 
@@ -69,7 +76,10 @@ configure_file(${CMAKE_SOURCE_DIR}/cmake/config.h.cmake config.h)
 
 include_directories(${MySQL_INCLUDE_DIR})
 
-set(CPP_SRC src/mysql.cpp)
+set(CPP_SRC
+  src/mysql.cpp
+  src/QoreMysqlBulkLoad.cpp
+)
 
 set(module_name "mysql")
 

@@ -1,4 +1,15 @@
 -----------
+Version 2.2
+-----------
+
+* added opt-in DBI native bulk loading with callback-driven LOAD DATA LOCAL INFILE and no temporary files
+* added exact callback-payload mutation stream reporting and cooperative cancellation
+* added savepoint-based abort semantics that preserve earlier transaction work and strict warning handling
+* added automatic fallback when local_infile, the table engine, or identifiers are ineligible
+* denied arbitrary client-side local file reads while retaining the guarded in-memory native source
+
+
+-----------
 Version 2.1
 -----------
 

@@ -1,7 +1,7 @@
 # Process this file with autoconf to produce a configure script.
 
 # AC_PREREQ(2.59)
-AC_INIT([qore-mysql-module], [2.1],
+AC_INIT([qore-mysql-module], [2.2],
         [David Nichols <david@qore.org>],
         [qore-mysql-module])
 AM_INIT_AUTOMAKE([no-dist-gzip dist-bzip2 tar-ustar])
@@ -623,6 +623,13 @@ MYSQL mysql; mysql_init(&mysql);
         # check for mysql_library_init
         if test -n "`grep mysql_library_init ${with_mysql_includes}/*.h`"; then
            AC_DEFINE(HAVE_MYSQL_LIBRARY_INIT, 1, Define if mysql_library_init and mysql_library_end functions are available)
+        fi
+        # check for callback-driven LOAD DATA LOCAL INFILE support
+        if test -n "`grep mysql_set_local_infile_handler ${with_mysql_includes}/*.h`"; then
+           AC_DEFINE(HAVE_MYSQL_SET_LOCAL_INFILE_HANDLER, 1, [Define if mysql_set_local_infile_handler() is available])
+        fi
+        if test -n "`grep MYSQL_OPT_LOCAL_INFILE ${with_mysql_includes}/*.h`"; then
+           AC_DEFINE(HAVE_MYSQL_OPT_LOCAL_INFILE, 1, [Define if MYSQL_OPT_LOCAL_INFILE is available])
         fi
         with_mysql=yes
      fi

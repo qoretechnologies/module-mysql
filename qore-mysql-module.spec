@@ -1,4 +1,4 @@
-%define mod_ver 2.1
+%define mod_ver 2.2
 %define module_api %(qore --latest-module-api 2>/dev/null)
 %define module_dir %{_libdir}/qore-modules
 
@@ -100,9 +100,12 @@ This RPM provides API documentation, test and example programs
 
 %files doc
 %defattr(-,root,root,-)
-%doc docs/mysql/html test/db-test.q test/sql-stmt.q
+%doc docs/mysql/html test/db-test.q test/mysql-native-bulk-load.qtest test/sql-stmt.q
 
 %changelog
+* Sat Aug 8 2026 David Nichols <david@qore.org> 2.2
+- added callback-driven native bulk loading
+
 * Tue Jan 25 2022 David Nichols <david@qore.org> 2.1
 - updated version to 2.1
 

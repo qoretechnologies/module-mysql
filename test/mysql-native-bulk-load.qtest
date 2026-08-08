@@ -1,0 +1,391 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+%modern
+
+%requires qore >= 3.0
+
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires mysql
+%requires SqlUtil
+%requires BulkSqlUtil
+
+%exec-class MysqlNativeBulkLoadTest
+
+#! collects native bulk-load stream events and can reject an oversized stream
+class MysqlNativeBulkStreamCollector {
+    public {
+        list<hash<SqlMutationEventInfo>> events();
+        int abort_after = 0;
+    }
+
+    *hash<SqlMutationDecisionInfo> event(hash<SqlMutationEventInfo> ev) {
+        events += ev;
+        if (abort_after && ev.event == SQL_MUTATION_EVENT_STREAM_PROGRESS
+            && ev.consumed_bytes > abort_after) {
+            return <SqlMutationDecisionInfo>{
+                "admit": False,
+                "err": "MYSQL-NATIVE-BULK-OVER-BUDGET",
+                "desc": sprintf("MySQL native bulk load consumed %d bytes", ev.consumed_bytes),
+            };
+        }
+        return NOTHING;
+    }
+
+    list<hash<SqlMutationEventInfo>> streamEvents() {
+        return map $1, events, $1.event >= SQL_MUTATION_EVENT_STREAM_BEGIN
+            && $1.event <= SQL_MUTATION_EVENT_STREAM_END;
+    }
+}
+
+#! verifies callback-driven LOAD DATA LOCAL INFILE against a live MariaDB or MySQL server
+public class MysqlNativeBulkLoadTest inherits QUnit::Test {
+    public {
+        const TableName = "qore_mysql_native_bulk_test";
+        const Rows = 4000;
+        const BlockSize = 1000;
+        const TextWidth = 200;
+
+        const LoadInfo = <SqlMutationInfo>{
+            "op_id": "mysql-native-load-data-1",
+            "path_id": TableName + ".insert",
+            "op_code": 9,
+            "effect": SQL_MUTATION_EFFECT_MAY_GROW,
+            "max_growth_bytes": 1048576,
+        };
+    }
+
+    private {
+        *string connstr;
+        MysqlNativeBulkStreamCollector obs();
+    }
+
+    constructor() : Test("MysqlNativeBulkLoadTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_MYSQL ?? shift ARGV;
+
+        addTestCase("native capability and scalar types", \capabilityAndTypesTest());
+        addTestCase("BulkSqlUtil LOAD DATA LOCAL INFILE", \nativeBulkSqlUtilTest());
+        addTestCase("native abort preserves prior transaction work", \savepointAbortTest());
+        addTestCase("native finish participates in transaction", \transactionParticipationTest());
+        addTestCase("native warnings roll back and recover", \warningRollbackTest());
+        addTestCase("native observer refusal", \observerRefusalTest());
+        addTestCase("native stream reporting disabled", \streamBoundsDisabledTest());
+        addTestCase("native row and option validation", \validationTest());
+        addTestCase("local_infile disabled automatic fallback", \disabledFallbackTest());
+        addTestCase("nontransactional engine automatic fallback", \engineFallbackTest());
+        addTestCase("raw local file access denied", \rawLocalFileDeniedTest());
+        addTestCase("close aborts native load", \closeAbortTest());
+
+        set_return_value(main());
+    }
+
+    private Datasource setupTable() {
+        if (!connstr.val()) {
+            testSkip("no MySQL connection; set QORE_DB_CONNSTR_MYSQL");
+        }
+        Datasource ds;
+        try {
+            ds = new Datasource(connstr);
+            if (ds.getDriverName() != "mysql") {
+                testSkip(sprintf("connection is for the %y driver, not mysql", ds.getDriverName()));
+            }
+            ds.setAutoCommit(False);
+            ds.open();
+        } catch (hash<ExceptionInfo> ex) {
+            testSkip("no MySQL connection: " + ex.err + ": " + ex.desc);
+        }
+        try {
+            ds.execRaw("drop table if exists " + TableName);
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+        }
+        ds.execRaw(sprintf("create table %s (id int primary key, text_col varchar(1000) not null, "
+            "binary_col blob, date_col datetime(6), float_col double, number_col decimal(20,6), "
+            "nullable_col varchar(100)) engine=InnoDB", TableName));
+        ds.commit();
+        obs.events = ();
+        obs.abort_after = 0;
+        return ds;
+    }
+
+    private dropTable(Datasource ds) {
+        ds.clearMutationObserver();
+        try {
+            ds.rollback();
+            ds.execRaw("drop table if exists " + TableName);
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+        }
+    }
+
+    private enableLocalInfile(Datasource ds) {
+        try {
+            ds.execRaw("set global local_infile = 1");
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+        }
+    }
+
+    private SqlUtil::AbstractTable getTable(Datasource ds) {
+        return (new SqlUtil::Table(ds, TableName)).getTable();
+    }
+
+    private queueRows(BulkSqlUtil::BulkInsertOperation op) {
+        for (int i = 0; i < Rows; ++i) {
+            op.queueData({"id": 1000 + i, "text_col": strmul("x", TextWidth)});
+        }
+    }
+
+    private int payloadBytes() {
+        # Each row has a four-byte id, one tab, the text payload, and one newline.
+        return Rows * (4 + 1 + TextWidth + 1);
+    }
+
+    capabilityAndTypesTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue((ds.getCapabilities() & DBI_CAP_HAS_BULK_LOAD) != 0);
+        assertTrue(ds.bulkLoadBegin(TableName,
+            ("id", "text_col", "binary_col", "date_col", "float_col", "number_col", "nullable_col"),
+            NOTHING));
+        ds.bulkLoadRows({
+            "id": (1, 2),
+            "text_col": ("tab\tline\nslash\\end", ""),
+            "binary_col": (<00090a0d1a5c>, NOTHING),
+            "date_col": (2026-08-08T12:34:56.123456, NOTHING),
+            "float_col": (1.25, -2.5),
+            "number_col": (123.45n, -7n),
+            "nullable_col": (NOTHING, "value"),
+        });
+        ds.bulkLoadRows({
+            "id": (), "text_col": (), "binary_col": (), "date_col": (),
+            "float_col": (), "number_col": (), "nullable_col": (),
+        });
+        ds.bulkLoadEnd(True);
+
+        hash<auto> rows = ds.select(sprintf("select id, text_col, hex(binary_col) binary_value, "
+            "date_format(date_col, '%%Y-%%m-%%d %%H:%%i:%%s.%%f') date_value, float_col, "
+            "cast(number_col as char) number_value, nullable_col from %s order by id", TableName));
+        assertEq((1, 2), rows.id);
+        assertEq(("tab\tline\nslash\\end", ""), rows.text_col);
+        assertEq(("00090A0D1A5C", NULL), rows.binary_value);
+        assertEq(("2026-08-08 12:34:56.123456", NULL), rows.date_value);
+        assertEq((1.25, -2.5), rows.float_col);
+        assertEq(("123.450000", "-7.000000"), rows.number_value);
+        assertEq((NULL, "value"), rows.nullable_col);
+        ds.commit();
+    }
+
+    nativeBulkSqlUtilTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        ds.setMutationObserver(\obs.event(), SQL_MUTATION_MASK_ALL);
+
+        {
+            SqlMutationDeclaration decl(ds, LoadInfo);
+            BulkSqlUtil::BulkInsertOperation op(getTable(ds), {
+                "bulk_load": True,
+                "block_size": BlockSize,
+            });
+            on_error op.discard();
+            queueRows(op);
+            op.flush();
+            op.endStream();
+        }
+
+        list<hash<SqlMutationEventInfo>> stream = obs.streamEvents();
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_BEGIN).size());
+        assertGt(0, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_PROGRESS).size());
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_END).size());
+        assertEq(payloadBytes(), stream.last().consumed_bytes);
+        assertEq(SQL_MUTATION_OUTCOME_OK, stream.last().outcome);
+        assertEq(Rows, ds.selectRow(sprintf("select count(*) c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    savepointAbortTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        ds.execRaw(sprintf("insert into %s (id, text_col) values (10, 'before')", TableName));
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("id", "text_col"), NOTHING));
+        ds.bulkLoadRows({"id": (11, 12), "text_col": ("native", "native")});
+        assertThrows("DBI:MYSQL:BULK-LOAD-ERROR", sub () { ds.commit(); });
+        ds.bulkLoadEnd(False);
+
+        assertEq(1, ds.selectRow(sprintf("select count(*) c from %s where id = 10", TableName)).c);
+        assertEq(0, ds.selectRow(sprintf("select count(*) c from %s where id in (11, 12)", TableName)).c);
+        ds.rollback();
+    }
+
+    transactionParticipationTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("id", "text_col"), NOTHING));
+        ds.bulkLoadRows({"id": (20,), "text_col": ("rollback",)});
+        ds.bulkLoadEnd(True);
+        ds.rollback();
+        assertEq(0, ds.selectRow(sprintf("select count(*) c from %s where id = 20", TableName)).c);
+        ds.commit();
+    }
+
+    warningRollbackTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("id", "text_col"), NOTHING));
+        assertThrows("DBI:MYSQL:BULK-LOAD-ERROR", sub () {
+            ds.bulkLoadRows({"id": (25, 25), "text_col": ("first", "duplicate")});
+        });
+        ds.bulkLoadEnd(False);
+        assertEq(0, ds.selectRow(sprintf("select count(*) c from %s", TableName)).c);
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("id", "text_col"), NOTHING));
+        ds.bulkLoadRows({"id": (26,), "text_col": ("reused",)});
+        ds.bulkLoadEnd(True);
+        assertEq("reused", ds.selectRow(sprintf("select text_col from %s where id = 26", TableName)).text_col);
+        ds.rollback();
+    }
+
+    observerRefusalTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        obs.abort_after = 65536;
+        ds.setMutationObserver(\obs.event(), SQL_MUTATION_MASK_ALL);
+
+        {
+            SqlMutationDeclaration decl(ds, LoadInfo);
+            BulkSqlUtil::BulkInsertOperation op(getTable(ds), {
+                "bulk_load": True,
+                "block_size": BlockSize,
+            });
+            on_error op.discard();
+            assertThrows("MYSQL-NATIVE-BULK-OVER-BUDGET", sub () { queueRows(op); });
+            op.discard();
+        }
+
+        list<hash<SqlMutationEventInfo>> stream = obs.streamEvents();
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_BEGIN).size());
+        assertGt(0, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_PROGRESS).size());
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_END).size());
+        assertEq(SQL_MUTATION_OUTCOME_NOT_EXECUTED, stream.last().outcome);
+        ds.clearMutationObserver();
+        assertEq(0, ds.selectRow(sprintf("select count(*) c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    streamBoundsDisabledTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        ds.setMutationObserver(\obs.event(), SQL_MUTATION_MASK_ALL);
+
+        BulkSqlUtil::BulkInsertOperation op(getTable(ds), {
+            "bulk_load": True,
+            "block_size": BlockSize,
+            "stream_bounds": False,
+        });
+        on_error op.discard();
+        queueRows(op);
+        op.endStream();
+
+        assertEq((), obs.streamEvents());
+        assertEq(Rows, ds.selectRow(sprintf("select count(*) c from %s", TableName)).c);
+        ds.rollback();
+    }
+
+    validationTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertThrows("DBI:MYSQL:BULK-LOAD-ERROR", sub () {
+            ds.bulkLoadBegin(TableName, ("id", "text_col"), {"stream_bounds": "yes"});
+        });
+        assertThrows("DBI:MYSQL:BULK-LOAD-ERROR", sub () {
+            ds.bulkLoadBegin(TableName, ("id", "id"), NOTHING);
+        });
+        assertFalse(ds.bulkLoadBegin("`" + TableName + "`", ("id", "text_col"), NOTHING));
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("id", "text_col"), NOTHING));
+        assertThrows("DBI:MYSQL:BULK-LOAD-ERROR", sub () {
+            ds.bulkLoadRows({"id": (1, 2), "text_col": ("one",)});
+        });
+        ds.bulkLoadEnd(False);
+        assertEq(0, ds.selectRow(sprintf("select count(*) c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    private requiredUnavailable(Datasource ds) {
+        BulkSqlUtil::BulkInsertOperation op(getTable(ds), {"bulk_load": True});
+        on_error op.discard();
+        op.queueData({"id": 31, "text_col": "required"});
+        op.flush();
+    }
+
+    disabledFallbackTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        on_exit enableLocalInfile(ds);
+        ds.execRaw("set global local_infile = 0");
+        ds.commit();
+
+        assertFalse(ds.bulkLoadBegin(TableName, ("id", "text_col"), NOTHING));
+        BulkSqlUtil::BulkInsertOperation op(getTable(ds), {"bulk_load": "auto"});
+        on_error op.discard();
+        op.queueData({"id": 30, "text_col": "fallback"});
+        op.flush();
+        op.endStream();
+        assertEq("fallback", ds.selectRow(sprintf("select text_col from %s where id = 30", TableName)).text_col);
+        ds.rollback();
+
+        assertThrows("BULK-SQL-OPERATION-ERROR", sub () { requiredUnavailable(ds); });
+        ds.rollback();
+        enableLocalInfile(ds);
+    }
+
+    engineFallbackTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        ds.execRaw("alter table " + TableName + " engine=MyISAM");
+        ds.commit();
+
+        assertFalse(ds.bulkLoadBegin(TableName, ("id", "text_col"), NOTHING));
+        BulkSqlUtil::BulkInsertOperation op(getTable(ds), {"bulk_load": "auto"});
+        on_error op.discard();
+        op.queueData({"id": 35, "text_col": "engine fallback"});
+        op.flush();
+        op.endStream();
+        assertEq("engine fallback",
+            ds.selectRow(sprintf("select text_col from %s where id = 35", TableName)).text_col);
+        ds.commit();
+    }
+
+    rawLocalFileDeniedTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertThrows("DBI:MYSQL:SELECT-ERROR", sub () {
+            ds.execRaw(sprintf("load data local infile '/etc/passwd' into table %s (text_col)", TableName));
+        });
+        ds.rollback();
+        assertEq(0, ds.selectRow(sprintf("select count(*) c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    closeAbortTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("id", "text_col"), NOTHING));
+        ds.bulkLoadRows({"id": (40, 41), "text_col": "close abort"});
+        assertThrows("DATASOURCE-TRANSACTION-EXCEPTION", sub () { ds.close(); });
+        ds.open();
+        assertEq(0, ds.selectRow(sprintf("select count(*) c from %s where id in (40, 41)", TableName)).c);
+        ds.commit();
+    }
+}
