@@ -372,9 +372,11 @@ public:
                     value.getTypeName());
                 return -1;
             }
-            const QoreStringNode* name = value.get<const QoreStringNode>();
+            // note: column names are short enough to be held in inline short string storage (ex:
+            // "id"), which has no QoreStringNode; the helper must stay in scope while "name" is used
+            QoreStringDataHelper name(value);
             std::vector<std::string> parts;
-            if (!qoreMysqlParseIdentifier(name->c_str(), false, parts, xsink)) {
+            if (!qoreMysqlParseIdentifier(name.c_str(), false, parts, xsink)) {
                 return *xsink ? -1 : 1;
             }
             std::string normalized(parts[0]);
@@ -383,10 +385,10 @@ public:
             });
             if (!used_columns.insert(normalized).second) {
                 xsink->raiseException("DBI:MYSQL:BULK-LOAD-ERROR",
-                    "column '%s' occurs more than once in the native bulk-load column list", name->c_str());
+                    "column '%s' occurs more than once in the native bulk-load column list", name.c_str());
                 return -1;
             }
-            columns.emplace_back(name->c_str(), name->size());
+            columns.emplace_back(name.c_str(), name.size());
             if (!quoted_columns.empty()) {
                 quoted_columns.append(", ");
             }
