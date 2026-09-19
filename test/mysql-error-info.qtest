@@ -146,13 +146,15 @@ public class MysqlErrorInfoTest inherits QUnit::Test {
     }
 
     connectionErrorInfoTest() {
-        if (!connstr.val()) {
-            testSkip("no MySQL connection; set QORE_DB_CONNSTR_MYSQL");
+        # establish that the server is reachable with valid credentials first; otherwise an
+        # unreachable server would be reported as rejected credentials, and this is the only test
+        # case here that does not need a usable connection of its own
+        {
+            Datasource reachable = getDatasource();
+            reachable.close();
         }
+
         hash<auto> params = parse_datasource(cast<string>(connstr));
-        if (params.type != "mysql") {
-            testSkip(sprintf("connection is for the %y driver, not mysql", params.type));
-        }
         params.pass = "qore-mysql-error-info-wrong-password";
 
         Datasource ds(params);

@@ -47,6 +47,25 @@ chown -R qore:qore ${MODULE_SRC_DIR}
 # run the tests
 export QORE_MODULE_DIR=${MODULE_SRC_DIR}/qlib:${QORE_MODULE_DIR}
 cd ${MODULE_SRC_DIR}
+
+# wait for the database server to accept connections; the GitLab "services" keyword starts the
+# container but does not wait for the server inside it to finish initializing, and without this
+# the tests race the server and skip themselves for lack of a connection
+echo && echo "-- waiting for the database server --"
+db_ready=0
+for i in $(seq 1 60); do
+    if gosu qore:qore qore -e '%new-style
+Datasource ds(ENV.QORE_DB_CONNSTR_MYSQL); ds.open(); ds.close();' >/dev/null 2>&1; then
+        db_ready=1
+        break
+    fi
+    sleep 1
+done
+if [ ${db_ready} -eq 0 ]; then
+    echo "database server at ${QORE_DB_CONNSTR_MYSQL} did not accept connections" >&2
+    exit 1
+fi
+
 for test in test/*.qtest; do
     gosu qore:qore qore $test -vv
 done
