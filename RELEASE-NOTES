@@ -7,6 +7,9 @@ Version 2.2
 * added savepoint-based abort semantics that preserve earlier transaction work and strict warning handling
 * added automatic fallback when local_infile, the table engine, or identifiers are ineligible
 * denied arbitrary client-side local file reads while retaining the guarded in-memory native source
+* added the alterr, alterr_code, and alterr_diag keys to the argument hash of every exception raised for a MySQL error, so that errors such as a deadlock can be classified from machine-readable codes
+* fixed errors raised for a prepared statement being reported from the connection instead of from the statement, which gave stale or empty text for client-side statement errors
+* fixed the text of a MySQL error being used as a printf() format string when raising an exception, which rendered an error message containing format characters from unrelated arguments
 
 
 -----------

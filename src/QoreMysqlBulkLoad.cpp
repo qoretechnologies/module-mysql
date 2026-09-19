@@ -122,7 +122,8 @@ static int qoreMysqlQuery(QoreMysqlConnection& conn, const std::string& sql, con
         return -1;
     }
     if (mysql_real_query(conn.db, sql.data(), static_cast<unsigned long>(sql.size()))) {
-        xsink->raiseException("DBI:MYSQL:BULK-LOAD-ERROR", "%s failed: %s", action, mysql_error(conn.db));
+        xsink->raiseExceptionArg("DBI:MYSQL:BULK-LOAD-ERROR", qore_mysql_error_arg(conn.db, xsink),
+            "%s failed: %s", action, mysql_error(conn.db));
         return -1;
     }
     return 0;
@@ -635,8 +636,8 @@ private:
             failed = true;
             stream.setError();
             if (!*xsink) {
-                xsink->raiseException("DBI:MYSQL:BULK-LOAD-ERROR", "native LOAD DATA failed: %s",
-                    mysql_error(conn.db));
+                xsink->raiseExceptionArg("DBI:MYSQL:BULK-LOAD-ERROR", qore_mysql_error_arg(conn.db, xsink),
+                    "native LOAD DATA failed: %s", mysql_error(conn.db));
             }
             return -1;
         }

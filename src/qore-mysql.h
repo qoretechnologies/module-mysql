@@ -245,6 +245,59 @@ public:
 DLLLOCAL MYSQL* qore_mysql_init(Datasource *ds, ExceptionSink* xsink);
 DLLLOCAL int mysql_set_collation(MYSQL* db, const char* collation_str, ExceptionSink* xsink);
 
+//! exception argument key holding the SQLSTATE of a MySQL error
+#define QORE_MYSQL_ALTERR "alterr"
+//! exception argument key holding the MySQL-specific error number of a MySQL error
+#define QORE_MYSQL_ALTERR_CODE "alterr_code"
+//! exception argument key holding the diagnostic text of a MySQL error
+#define QORE_MYSQL_ALTERR_DIAG "alterr_diag"
+
+//! returns an exception argument hash describing a MySQL error
+/** All three keys are always present, so that callers can classify an error from machine-readable
+    codes without having to test for the presence of the keys first and without having to match the
+    server's localized error text
+
+    @param errnum the MySQL-specific error number (for example, 1213 for ER_LOCK_DEADLOCK)
+    @param sqlstate the five-character SQLSTATE (for example, \c "40001"); may be null
+    @param diag the diagnostic text for the error; may be null
+    @param xsink the exception sink for the new hash
+
+    @return the exception argument hash; always returns a value
+*/
+static inline QoreHashNode* qore_mysql_make_error_arg(unsigned int errnum, const char* sqlstate,
+        const char* diag, ExceptionSink* xsink) {
+    ReferenceHolder<QoreHashNode> arg(new QoreHashNode(autoTypeInfo), xsink);
+    arg->setKeyValue(QORE_MYSQL_ALTERR, new QoreStringNode(sqlstate ? sqlstate : ""), xsink);
+    arg->setKeyValue(QORE_MYSQL_ALTERR_CODE, static_cast<int64>(errnum), xsink);
+    arg->setKeyValue(QORE_MYSQL_ALTERR_DIAG, new QoreStringNode(diag ? diag : ""), xsink);
+    return arg.release();
+}
+
+//! returns an exception argument hash for the last error reported on a MySQL connection
+/** @param db the connection reporting the error
+    @param xsink the exception sink for the new hash
+
+    @return the exception argument hash; always returns a value
+*/
+static inline QoreHashNode* qore_mysql_error_arg(MYSQL* db, ExceptionSink* xsink) {
+    return qore_mysql_make_error_arg(mysql_errno(db), mysql_sqlstate(db), mysql_error(db), xsink);
+}
+
+//! returns an exception argument hash for the last error reported on a MySQL statement
+/** Statement errors must be read from the statement handle; a client-side statement error is not
+    reported on the connection at all, and a connection carries the error for its most recent
+    operation, which is not necessarily the statement's
+
+    @param stmt the statement reporting the error
+    @param xsink the exception sink for the new hash
+
+    @return the exception argument hash; always returns a value
+*/
+static inline QoreHashNode* qore_mysql_stmt_error_arg(MYSQL_STMT* stmt, ExceptionSink* xsink) {
+    return qore_mysql_make_error_arg(mysql_stmt_errno(stmt), mysql_stmt_sqlstate(stmt),
+        mysql_stmt_error(stmt), xsink);
+}
+
 static inline bool wasInTransaction(Datasource *ds) {
 #ifdef _QORE_HAS_DATASOURCE_ACTIVETRANSACTION
    return ds->activeTransaction();
@@ -350,6 +403,11 @@ public:
 
     DLLLOCAL int q_errno() {
         return mysql_errno(db);
+    }
+
+    //! returns an exception argument hash for the last error reported on this connection
+    DLLLOCAL QoreHashNode* getErrorArg(ExceptionSink* xsink) {
+        return qore_mysql_error_arg(db, xsink);
     }
 
     DLLLOCAL MYSQL_STMT *stmt_init(ExceptionSink* xsink) {

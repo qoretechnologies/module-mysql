@@ -154,6 +154,47 @@ ds.commit();
 
     Additionally the <tt>CLIENT_FOUND_ROWS</tt> option is set for each connection, so <tt>Datasource::exec()</tt> will return the number of rows affected by insert/update queries, etc in a manner consistent with other Qore DBI drivers (if this option is not set and a single row is updated with the same values, 0 would be returned instead of 1 which would not conform to the behavior of other Qore DBI drivers).
 
+    @section mysqlerrorinfo Error Information
+
+    Every exception raised for an error reported by MySQL or by the MySQL client library carries an
+    argument hash with the following keys, so that errors can be classified from machine-readable
+    codes instead of from the server's localized error text:
+
+    |!Key|!Type|!Description
+    |\c alterr|<tt>Type::String</tt>|the five-character \c SQLSTATE for the error (for example, \c "40001"); an empty string if the client library reports no \c SQLSTATE
+    |\c alterr_code|<tt>Type::Int</tt>|the MySQL-specific error number (for example, \c 1213 for \c ER_LOCK_DEADLOCK)
+    |\c alterr_diag|<tt>Type::String</tt>|the diagnostic text for the error as reported by MySQL
+
+    All three keys are always present, so that they can be read without testing for their presence
+    first.
+
+    Both the \c SQLSTATE and the error number are needed to classify an error; the \c SQLSTATE alone
+    is not sufficient, because MySQL reports many unrelated errors with the generic value
+    \c "HY000".  A lock wait timeout (\c ER_LOCK_WAIT_TIMEOUT, \c 1205) is one such error, while a
+    deadlock (\c ER_LOCK_DEADLOCK, \c 1213) is reported with \c SQLSTATE \c "40001".
+
+    @note Errors raised for a prepared statement report the error from the statement rather than
+    from the connection; a client-side statement error is never reported on the connection at all.
+
+    A deadlock aborts and rolls back the entire transaction, so the canonical handling is to replay
+    the complete transaction:
+
+    @code{.py}
+while (True) {
+    try {
+        on_error ds.rollback();
+        on_success ds.commit();
+        # the complete transaction body must be idempotent
+        doTransaction(ds);
+        break;
+    } catch (hash<ExceptionInfo> ex) {
+        if (ex.arg.alterr_code != 1213) {
+            rethrow;
+        }
+    }
+}
+    @endcode
+
     @section mysqlbind Binding and Types
 
     See @ref mysql_to_qore for information on how MySQL types are converted to Qore data types, and @ref mysql_binding_by_value for information on how Qore data types are converted to MySQL types when binding by value.
@@ -250,6 +291,15 @@ hash: (1 member)
     @section mysqlreleasenotes Release Notes
 
     @subsection mysql2_2 mysql Driver Version 2.2
+    - added the \c alterr, \c alterr_code, and \c alterr_diag keys to the argument hash of every
+      exception raised for a MySQL error, so that errors such as a deadlock can be classified from
+      machine-readable codes; see @ref mysqlerrorinfo
+    - fixed errors raised for a prepared statement being reported from the connection instead of
+      from the statement; a client-side statement error is not reported on the connection, so such
+      errors were reported with stale or empty text
+    - fixed the text of a MySQL error being used as a \c printf() format string when raising an
+      exception, so that an error message containing format characters was rendered from unrelated
+      arguments
     - added opt-in callback-driven native bulk loading with \c DBI_CAP_HAS_BULK_LOAD
     - added transactional multi-block cleanup with an internal savepoint, strict warning handling,
       exact callback-payload stream accounting, and cooperative cancellation

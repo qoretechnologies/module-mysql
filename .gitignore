@@ -30,3 +30,4 @@ src/qc_*.cpp
 src/ql_*.cpp
 src/QC_*.cpp
 build/
+build-debug/

@@ -1,0 +1,230 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+%modern
+
+%requires qore >= 3.0
+
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires mysql
+
+%exec-class MysqlErrorInfoTest
+
+#! verifies that MySQL exceptions carry machine-readable error information
+/** The driver reports the MySQL error number, the SQLSTATE, and the diagnostic text in the
+    exception argument hash, so that callers can classify a failure - a deadlock in particular -
+    without matching the server's localized error text
+*/
+public class MysqlErrorInfoTest inherits QUnit::Test {
+    public {
+        const TableName = "qore_mysql_error_info_test";
+
+        #! ER_LOCK_WAIT_TIMEOUT: the statement waited too long for a row lock
+        const ErrLockWaitTimeout = 1205;
+        #! ER_LOCK_DEADLOCK: the transaction was chosen as a deadlock victim and rolled back
+        const ErrLockDeadlock = 1213;
+        #! ER_NO_SUCH_TABLE: the referenced table does not exist
+        const ErrNoSuchTable = 1146;
+        #! ER_ACCESS_DENIED_ERROR: the credentials were rejected
+        const ErrAccessDenied = 1045;
+
+        #! SQLSTATE reported for a deadlock and for any other serialization failure
+        const SqlStateSerializationFailure = "40001";
+        #! SQLSTATE reported for a missing table
+        const SqlStateNoSuchTable = "42S02";
+        #! SQLSTATE reported for rejected credentials
+        const SqlStateAccessDenied = "28000";
+    }
+
+    private {
+        *string connstr;
+    }
+
+    constructor() : Test("MysqlErrorInfoTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_MYSQL ?? shift ARGV;
+
+        addTestCase("statement error info", \statementErrorInfoTest());
+        addTestCase("raw statement error info", \rawStatementErrorInfoTest());
+        addTestCase("error text is not a format string", \errorTextNotAFormatStringTest());
+        addTestCase("connection error info", \connectionErrorInfoTest());
+        addTestCase("deadlock error info", \deadlockErrorInfoTest());
+        addTestCase("lock wait timeout error info", \lockWaitTimeoutErrorInfoTest());
+
+        set_return_value(main());
+    }
+
+    #! returns an open datasource, skipping the test when no server is configured
+    private Datasource getDatasource() {
+        if (!connstr.val()) {
+            testSkip("no MySQL connection; set QORE_DB_CONNSTR_MYSQL");
+        }
+        Datasource ds;
+        try {
+            ds = new Datasource(cast<string>(connstr));
+            if (ds.getDriverName() != "mysql") {
+                testSkip(sprintf("connection is for the %y driver, not mysql", ds.getDriverName()));
+            }
+            ds.setAutoCommit(False);
+            ds.open();
+        } catch (hash<ExceptionInfo> ex) {
+            testSkip("no MySQL connection: " + ex.err + ": " + ex.desc);
+        }
+        return ds;
+    }
+
+    #! returns an open datasource with a two-row InnoDB table that two transactions can contend on
+    private Datasource setupTable() {
+        Datasource ds = getDatasource();
+        ds.execRaw("drop table if exists " + TableName);
+        ds.execRaw(sprintf("create table %s (id int not null primary key, val int not null) "
+            "engine=InnoDB", TableName));
+        ds.execRaw(sprintf("insert into %s (id, val) values (1, 0), (2, 0)", TableName));
+        ds.commit();
+        return ds;
+    }
+
+    #! runs the operation, requires it to fail, and returns the exception it raised
+    private hash<ExceptionInfo> failingOperation(code operation, string name) {
+        *hash<ExceptionInfo> caught;
+        try {
+            operation();
+        } catch (hash<ExceptionInfo> ex) {
+            caught = ex;
+        }
+        assertTrue(exists caught, name);
+        return cast<hash<ExceptionInfo>>(caught);
+    }
+
+    #! asserts the shape of the error information carried by every MySQL exception
+    private assertErrorInfo(hash<ExceptionInfo> ex, int expected_code, *string expected_sqlstate) {
+        assertEq(Type::Int, ex.arg.alterr_code.type(),
+            "the error number must be an integer so that callers can compare it numerically");
+        assertEq(expected_code, ex.arg.alterr_code);
+        assertEq(Type::String, ex.arg.alterr.type(), "the SQLSTATE must always be present");
+        if (exists expected_sqlstate) {
+            assertEq(expected_sqlstate, ex.arg.alterr);
+        }
+        assertEq(Type::String, ex.arg.alterr_diag.type(), "the diagnostic text must always be present");
+        assertTrue(ex.arg.alterr_diag.val(), "the server must report diagnostic text for this error");
+    }
+
+    statementErrorInfoTest() {
+        Datasource ds = getDatasource();
+        on_exit ds.rollback();
+
+        hash<ExceptionInfo> ex = failingOperation(sub () {
+            ds.select("select * from qore_mysql_no_such_table_xyz");
+        }, "selecting from a missing table must fail");
+        assertErrorInfo(ex, ErrNoSuchTable, SqlStateNoSuchTable);
+        assertRegex("qore_mysql_no_such_table_xyz", ex.arg.alterr_diag);
+    }
+
+    rawStatementErrorInfoTest() {
+        Datasource ds = getDatasource();
+        on_exit ds.rollback();
+
+        # execRaw() does not use a prepared statement, so it reports the error from the connection
+        hash<ExceptionInfo> ex = failingOperation(sub () {
+            ds.execRaw("select * from qore_mysql_no_such_table_xyz");
+        }, "an unprepared statement against a missing table must fail");
+        assertErrorInfo(ex, ErrNoSuchTable, SqlStateNoSuchTable);
+    }
+
+    errorTextNotAFormatStringTest() {
+        Datasource ds = getDatasource();
+        on_exit ds.rollback();
+
+        # the server echoes the identifier into the error text; the driver must report it literally
+        # and must not use it as a format string
+        hash<ExceptionInfo> ex = failingOperation(sub () {
+            ds.execRaw("select * from `qore_%s_%d_missing`");
+        }, "an unprepared statement with format characters in the name must fail");
+        assertErrorInfo(ex, ErrNoSuchTable, SqlStateNoSuchTable);
+        assertRegex("qore_%s_%d_missing", ex.desc);
+        assertRegex("qore_%s_%d_missing", ex.arg.alterr_diag);
+    }
+
+    connectionErrorInfoTest() {
+        if (!connstr.val()) {
+            testSkip("no MySQL connection; set QORE_DB_CONNSTR_MYSQL");
+        }
+        hash<auto> params = parse_datasource(cast<string>(connstr));
+        if (params.type != "mysql") {
+            testSkip(sprintf("connection is for the %y driver, not mysql", params.type));
+        }
+        params.pass = "qore-mysql-error-info-wrong-password";
+
+        Datasource ds(params);
+        hash<ExceptionInfo> ex = failingOperation(\ds.open(),
+            "opening a connection with the wrong password must fail");
+        assertEq("DBI:MYSQL:CONNECT-ERROR", ex.err);
+        assertErrorInfo(ex, ErrAccessDenied, SqlStateAccessDenied);
+    }
+
+    deadlockErrorInfoTest() {
+        Datasource first = setupTable();
+        Datasource second = getDatasource();
+        on_exit {
+            first.rollback();
+            second.rollback();
+            first.execRaw("drop table if exists " + TableName);
+            first.commit();
+        }
+
+        # both transactions lock one row, then each tries to lock the row the other holds; InnoDB
+        # breaks the cycle by aborting one of them with ER_LOCK_DEADLOCK
+        Counter locked(2);
+        Queue results();
+        code<nothing(Datasource, int, int)> contend = sub (Datasource ds, int own, int other) {
+            try {
+                ds.execRaw(sprintf("update %s set val = val + 1 where id = %d", TableName, own));
+                # release only once this transaction holds its own row lock, so that the second
+                # update of each transaction always closes the cycle
+                locked.dec();
+                locked.waitForZero();
+                ds.execRaw(sprintf("update %s set val = val + 1 where id = %d", TableName, other));
+                ds.commit();
+                results.push({"failed": False});
+            } catch (hash<ExceptionInfo> ex) {
+                ds.rollback();
+                results.push({"failed": True, "ex": ex});
+            }
+        };
+
+        background contend(first, 1, 2);
+        background contend(second, 2, 1);
+
+        list<auto> outcome = (results.get(), results.get());
+        list<auto> failures = map $1, outcome, $1.failed;
+        assertEq(1, failures.size(),
+            "InnoDB must abort exactly one of the two deadlocked transactions");
+
+        hash<ExceptionInfo> ex = cast<hash<ExceptionInfo>>(failures[0].ex);
+        assertErrorInfo(ex, ErrLockDeadlock, SqlStateSerializationFailure);
+        assertRegex("[Dd]eadlock", ex.arg.alterr_diag);
+    }
+
+    lockWaitTimeoutErrorInfoTest() {
+        Datasource holder = setupTable();
+        Datasource waiter = getDatasource();
+        on_exit {
+            holder.rollback();
+            waiter.rollback();
+            holder.execRaw("drop table if exists " + TableName);
+            holder.commit();
+        }
+
+        # the waiter gives up on the row lock after one second instead of the server default
+        waiter.execRaw("set session innodb_lock_wait_timeout = 1");
+        holder.execRaw(sprintf("update %s set val = val + 1 where id = 1", TableName));
+
+        hash<ExceptionInfo> ex = failingOperation(sub () {
+            waiter.execRaw(sprintf("update %s set val = val + 1 where id = 1", TableName));
+        }, "the second transaction must give up waiting for the row lock");
+        assertErrorInfo(ex, ErrLockWaitTimeout);
+        # a lock wait timeout is not reported as a serialization failure, so the SQLSTATE alone
+        # cannot tell the two apart; the MySQL error number is what distinguishes them
+        assertNeq(SqlStateSerializationFailure, ex.arg.alterr);
+    }
+}
