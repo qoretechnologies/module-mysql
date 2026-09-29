@@ -1,0 +1,11 @@
+qore-mysql-module (2.2~git20260928.1+ds-0qore1~ubuntu26.04) resolute; urgency=medium
+
+  * Package the native MySQL/MariaDB driver, documentation and examples.
+  * Link distribution MariaDB Connector/C with native hardening/debug symbols.
+  * Test against a disposable MariaDB server over a private Unix socket.
+  * Add installed runtime and fresh compiler/database round-trip tests.
+  * Remove passwords from connection debug logging.
+  * Support documentation profiles and reproducible offline builds.
+  * Omit the unused legacy pthread macro with no accompanying license notice.
+
+ -- David Nichols <david@qore.org>  Tue, 29 Sep 2026 01:13:49 +0000

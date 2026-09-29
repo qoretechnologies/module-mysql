@@ -1,0 +1,10 @@
+#!/bin/sh
+# Copyright (C) 2026 David Nichols
+# SPDX-License-Identifier: MIT
+set -eu
+export LC_ALL=C.UTF-8
+unset QORE_MODULE_DIR QORE_MODULE_DIR_ONLY QORE_INCLUDE_DIR LD_LIBRARY_PATH LD_PRELOAD
+unset QORE_MYSQL_BINARY_MODULE
+cp test/*.qtest debian/tests/with-database debian/tests/run-suites "$AUTOPKGTEST_TMP/"
+cd "$AUTOPKGTEST_TMP"
+exec ./with-database ./run-suites .

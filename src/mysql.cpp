@@ -285,8 +285,8 @@ MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
     if (!port && ds->getHostName())
         port = MYSQL_PORT;
 
-    printd(3, "qore_mysql_init(): user: '%s' pass: '%s' db: '%s' (encoding=%s) host: '%s' port: %d\n",
-            ds->getUsername(), ds->getPassword(), ds->getDBName(), ds->getDBEncoding() ? ds->getDBEncoding() : "(none)", ds->getHostName(), port);
+    printd(3, "qore_mysql_init(): user: '%s' db: '%s' (encoding=%s) host: '%s' port: %d\n",
+            ds->getUsername(), ds->getDBName(), ds->getDBEncoding() ? ds->getDBEncoding() : "(none)", ds->getHostName(), port);
 
     if (!mysql_real_connect(db, ds->getHostName(), ds->getUsername(), ds->getPassword(), ds->getDBName(), port, 0, CLIENT_FOUND_ROWS)) {
         xsink->raiseExceptionArg("DBI:MYSQL:CONNECT-ERROR", qore_mysql_error_arg(db, xsink), "%s",

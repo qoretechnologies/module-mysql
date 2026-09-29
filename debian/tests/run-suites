@@ -1,0 +1,11 @@
+#!/bin/sh
+# Copyright (C) 2026 David Nichols
+# SPDX-License-Identifier: MIT
+set -eu
+test -n "$QORE_DB_CONNSTR_MYSQL"
+module=${QORE_MYSQL_BINARY_MODULE:-mysql}
+# Fail before the suites if the driver cannot reach the disposable database.
+/usr/bin/qore --lgpl -l "$module" -e 'Datasource db(ENV.QORE_DB_CONNSTR_MYSQL); db.open(); db.close();'
+for suite in "$1"/*.qtest; do
+    timeout 180 /usr/bin/qore --lgpl -l "$module" "$suite" -v
+done

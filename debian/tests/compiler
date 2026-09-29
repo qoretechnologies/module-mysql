@@ -1,0 +1,24 @@
+#!/bin/sh
+# Copyright (C) 2026 David Nichols
+# SPDX-License-Identifier: MIT
+set -eu
+export LC_ALL=C.UTF-8
+unset QORE_MODULE_DIR QORE_MODULE_DIR_ONLY QORE_INCLUDE_DIR LD_LIBRARY_PATH LD_PRELOAD
+cp debian/tests/with-database "$AUTOPKGTEST_TMP/"
+cd "$AUTOPKGTEST_TMP"
+cat > mysql-smoke.q <<'EOF'
+%modern
+%requires mysql
+int sub main() {
+    Datasource db(ENV.QORE_DB_CONNSTR_MYSQL);
+    on_exit db.close();
+    db.exec("create temporary table smoke (id integer, value text)");
+    db.exec("insert into smoke values (%v, %v)", 42, "mysql-aot-ok");
+    db.commit();
+    hash<auto> row = db.selectRow("select id, value from smoke");
+    return row.id == 42 && row.value == "mysql-aot-ok" ? 0 : 1;
+}
+exit(main());
+EOF
+/usr/bin/qcc -o mysql-smoke mysql-smoke.q
+./with-database ./mysql-smoke

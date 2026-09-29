@@ -1,0 +1,8 @@
+Tests: runtime
+Depends: qore-mysql-module, mariadb-server-core, mariadb-client-core
+# QUnit and temporary database startup diagnostics use stderr.
+Restrictions: allow-stderr
+
+Tests: compiler
+Depends: qore-mysql-module, libqore-dev, mariadb-server-core, mariadb-client-core
+Restrictions: allow-stderr

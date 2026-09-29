@@ -31,3 +31,15 @@ src/ql_*.cpp
 src/QC_*.cpp
 build/
 build-debug/
+
+# Debian package build products
+/obj-*/
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper
+/debian/qore-mysql-module/
+/debian/qore-mysql-module-doc/
+/debian/tmp/
+**/__pycache__/

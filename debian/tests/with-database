@@ -1,0 +1,45 @@
+#!/bin/sh
+# Copyright (C) 2026 David Nichols
+# SPDX-License-Identifier: MIT
+set -eu
+umask 077
+work_dir=$(mktemp -d)
+server_pid=
+cleanup() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    if [ -n "$server_pid" ]; then
+        kill "$server_pid" 2>/dev/null || :
+        wait "$server_pid" 2>/dev/null || :
+    fi
+    if [ "$status" -ne 0 ]; then
+        cat "$work_dir/install.log" "$work_dir/server.log" >&2 2>/dev/null || :
+    fi
+    rm -rf "$work_dir"
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# All server files and the socket are private to this unprivileged test user.
+mariadb-install-db --no-defaults --datadir="$work_dir/data" \
+    --auth-root-authentication-method=normal --skip-test-db > "$work_dir/install.log" 2>&1
+/usr/sbin/mariadbd --no-defaults --datadir="$work_dir/data" \
+    --socket="$work_dir/server.sock" --pid-file="$work_dir/server.pid" \
+    --skip-networking --local-infile=1 --innodb-buffer-pool-size=64M \
+    > "$work_dir/server.log" 2>&1 &
+server_pid=$!
+export MYSQL_UNIX_PORT="$work_dir/server.sock"
+tries=0
+until mariadb --no-defaults --socket="$MYSQL_UNIX_PORT" --user=root -e 'SELECT 1' >/dev/null 2>&1; do
+    kill -0 "$server_pid"
+    tries=$((tries + 1))
+    test "$tries" -lt 30
+    sleep 1
+done
+mariadb --no-defaults --socket="$MYSQL_UNIX_PORT" --user=root \
+    -e 'CREATE DATABASE qoretest CHARACTER SET utf8mb4'
+# Passwordless access is limited to the test user's private socket; no TCP listener.
+export QORE_DB_CONNSTR_MYSQL='mysql:root/@qoretest'
+"$@"

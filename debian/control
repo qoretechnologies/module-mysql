@@ -1,0 +1,39 @@
+Source: qore-mysql-module
+Section: interpreters
+Priority: optional
+Maintainer: David Nichols <david@qore.org>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.5),
+               libqore-dev (>= 3.0.0~),
+               qore (>= 3.0.0~),
+               libmariadb-dev-compat,
+               mariadb-server-core <!nocheck>,
+               mariadb-client-core <!nocheck>
+Build-Depends-Indep: doxygen <!nodoc>
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://qore.org
+Vcs-Git: https://github.com/qoretechnologies/module-mysql.git
+Vcs-Browser: https://github.com/qoretechnologies/module-mysql
+
+Package: qore-mysql-module
+Architecture: any
+Depends: ${qore:Depends},
+         ${shlibs:Depends},
+         ${misc:Depends}
+Suggests: qore-mysql-module-doc
+Description: MySQL and MariaDB database driver for Qore
+ This module connects Qore's DBI API to MySQL and MariaDB databases using
+ MariaDB Connector/C. It supports prepared statements, transactions, Unicode,
+ columnar results and guarded native bulk loading.
+
+Package: qore-mysql-module-doc
+Section: doc
+Architecture: all
+Multi-Arch: foreign
+Build-Profiles: <!nodoc>
+Depends: ${misc:Depends}
+Suggests: qore-mysql-module
+Description: documentation and examples for Qore's MySQL/MariaDB driver
+ This package contains the HTML API reference and example tests for Qore's
+ MySQL/MariaDB database driver.

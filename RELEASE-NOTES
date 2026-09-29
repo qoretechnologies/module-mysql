@@ -2,6 +2,7 @@
 Version 2.2
 -----------
 
+* stopped printing database passwords in connection debug logging
 * added opt-in DBI native bulk loading with callback-driven LOAD DATA LOCAL INFILE and no temporary files
 * added exact callback-payload mutation stream reporting and cooperative cancellation
 * added savepoint-based abort semantics that preserve earlier transaction work and strict warning handling

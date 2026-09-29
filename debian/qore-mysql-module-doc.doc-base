@@ -1,0 +1,9 @@
+Document: qore-mysql-module
+Title: Qore MySQL/MariaDB Module Reference
+Author: Qore Technologies, s.r.o.
+Abstract: API reference for using MySQL/MariaDB databases through Qore DBI.
+Section: Programming
+
+Format: HTML
+Index: /usr/share/doc/qore-mysql-module-doc/html/index.html
+Files: /usr/share/doc/qore-mysql-module-doc/html/*.html
