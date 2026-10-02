@@ -11,7 +11,7 @@
 %bcond_without docs
 Name: qore-mysql-module
 Version: 2.2
-Release: 2%{?dist}
+Release: 3%{?dist}
 Summary: MySQL and MariaDB database driver for Qore
 License: LGPL-2.1-or-later
 URL: https://github.com/qoretechnologies/module-mysql
@@ -110,6 +110,9 @@ python3 -B -W error rpm/run-tests.py --build-dir build
 %endif
 
 %changelog
+* Fri Oct 02 2026 David Nichols <david@qore.org> - 2.2-3
+- Bound private MariaDB fixture resources for OBS 1024-descriptor build workers.
+
 * Fri Oct 02 2026 David Nichols <david@qore.org> - 2.2-2
 - Package the MariaDB client driver, API reference and examples.
 - Test offline against a private unprivileged MariaDB over a Unix socket.

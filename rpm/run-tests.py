@@ -116,7 +116,11 @@ def run(build=None, compiler=False):
         root = Path(directory)
         # The directory is mode 0700. No TCP listener or host database is used.
         env.update(MYSQL_UNIX_PORT=str(root / 'server.sock'), QORE_DB_CONNSTR_MYSQL='mysql:root/@qoretest')
-        local_settings = ['--wsrep-node-address=127.0.0.1', '--wsrep-node-incoming-address=127.0.0.1']
+        # Bound this small fixture's caches and connections below OBS's 1024-FD limit.
+        # Keep resource warnings fatal rather than widening the diagnostic exception.
+        local_settings = ['--wsrep-node-address=127.0.0.1', '--wsrep-node-incoming-address=127.0.0.1',
+                          '--open-files-limit=512', '--table-open-cache=64', '--table-open-cache-instances=1',
+                          '--max-connections=64']
         initialized = subprocess.run(['mariadb-install-db', '--no-defaults', '--datadir=' + str(root / 'data'),
                         '--auth-root-authentication-method=normal', '--skip-test-db', '--force', *local_settings],
                        env=env, cwd=root, check=True, timeout=120, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

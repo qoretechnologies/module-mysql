@@ -57,3 +57,8 @@ accepted. Unit tests reject altered messages, unexpected accounts, duplicate or
 missing authentication entries, duplicate MAC warnings and all error severities.
 These two fixture diagnostics were explicitly approved by the maintainer; no
 warning is disabled in the driver, its compiler, documentation or Qore tests.
+
+The private database sets bounded connection/table cache and its instance counts and a 512-file
+request, so qualification also works with OBS's 1024-file process limit.
+Resource-limit warnings remain errors; they are not part of the diagnostic
+exception. Qualification runs under an explicit 1024-file hard limit.

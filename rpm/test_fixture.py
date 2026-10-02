@@ -101,6 +101,7 @@ class FixtureTests(unittest.TestCase):
                            (denied + denied, True), (denied.replace('root', 'other'), True),
                            ('2026-10-02 3:04:05 0 [Warning] disk error', False),
                            ('2026-10-02 3:04:05 0 [ERROR] failed to retrieve the MAC address', False),
+                           ('2026-10-02 3:04:05 0 [Warning] Could not increase number of max_open_files to more than 1024 (request: 32186)', False),
                            ('WARNING: DNS unavailable', False)):
             with self.subTest(text=text, authentication=auth), self.assertRaisesRegex(RuntimeError, 'Unexpected'):
                 fixture.validate_diagnostics(text, authentication_test=auth)
