@@ -7,7 +7,7 @@
     @section mysql2_2 mysql Driver Version 2.2
     - added the \c alterr, \c alterr_code, and \c alterr_diag keys to the argument hash of every
       exception raised for a MySQL error, so that errors such as a deadlock can be classified from
-      machine-readable codes; see @ref mysqlerrorinfo
+      machine-readable codes; see @ref mysqlerrorinfoguide
     - fixed errors raised for a prepared statement being reported from the connection instead of
       from the statement; a client-side statement error is not reported on the connection, so such
       errors were reported with stale or empty text

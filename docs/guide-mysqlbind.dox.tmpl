@@ -16,7 +16,7 @@ date now = db.selectRow("select current_timestamp into :time").time;
 
     @section mysqltimezone Time Zone Support
 
-    The driver now sets the server's time zone rules when the connection is established; this is taken from the current time zone settings of the calling Program object and can also be overridden/changed by setting the \c "timezone" driver option (see @ref mysqloptions).
+    The driver now sets the server's time zone rules when the connection is established; this is taken from the current time zone settings of the calling Program object and can also be overridden/changed by setting the \c "timezone" driver option (see @ref mysqloptionsguide).
 
     All date/time values bound by value are converted to the server's time zone before binding to ensure that date/time values are stored correctly in the server.
 
@@ -34,8 +34,8 @@ date now = db.selectRow("select current_timestamp into :time").time;
     |<tt>BIGINT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>YEAR</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>BIT</tt>|<tt>Type::Int</tt>|direct conversion
-    |<tt>DECIMAL</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptions "driver options"
-    |<tt>NUMERIC</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptions "driver options"
+    |<tt>DECIMAL</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptionsguide "driver options"
+    |<tt>NUMERIC</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptionsguide "driver options"
     |<tt>FLOAT</tt>|<tt>Type::Float</tt>|direct conversion
     |<tt>DOUBLE</tt>|<tt>Type::Float</tt>|direct conversion
     |<tt>DATETIME</tt>|<tt>Type::Date</tt>|direct conversion
