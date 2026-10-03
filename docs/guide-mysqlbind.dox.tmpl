@@ -1,0 +1,71 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page mysqlbindguide Binding and Types
+
+    @tableofcontents
+
+    See @ref mysql_to_qore for information on how MySQL types are converted to Qore data types, and @ref mysql_binding_by_value for information on how Qore data types are converted to MySQL types when binding by value.
+
+    Note that is is not necessary to give buffer types when binding placeholder values; the \c mysql driver will determine the needed type in advance and create the placeholder buffer automatically.
+
+    Qore placeholder buffer specifications can still be used to retrieve output variables as follows however:
+
+    @code{.py}
+date now = db.selectRow("select current_timestamp into :time").time;
+    @endcode
+
+    @section mysqltimezone Time Zone Support
+
+    The driver now sets the server's time zone rules when the connection is established; this is taken from the current time zone settings of the calling Program object and can also be overridden/changed by setting the \c "timezone" driver option (see @ref mysqloptions).
+
+    All date/time values bound by value are converted to the server's time zone before binding to ensure that date/time values are stored correctly in the server.
+
+    When selecting date/time values, the values returned are tagged with the server's time zone.
+
+    Note that the above rules are applied when the current Program's time zone settings are different than the connection's time zone settings at the time when the write operation (bind) read operation (select) is performed.  This is meant to provide consistent support to connecting to a database server in a different time zone.
+
+    @section mysql_to_qore MySQL to Qore Type Mappings
+
+    |!MySQL Type|!Qore Type|!Notes
+    |<tt>TINYINT</tt>|<tt>Type::Int</tt>|direct conversion (note that <tt>BOOL</tt> and <tt>BOOLEAN</tt> are synonyms for this type in MySQL)
+    |<tt>SMALLINT</tt>|<tt>Type::Int</tt>|direct conversion
+    |<tt>MEDIUMINT</tt>|<tt>Type::Int</tt>|direct conversion
+    |<tt>INT</tt>|<tt>Type::Int</tt>|direct conversion
+    |<tt>BIGINT</tt>|<tt>Type::Int</tt>|direct conversion
+    |<tt>YEAR</tt>|<tt>Type::Int</tt>|direct conversion
+    |<tt>BIT</tt>|<tt>Type::Int</tt>|direct conversion
+    |<tt>DECIMAL</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptions "driver options"
+    |<tt>NUMERIC</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptions "driver options"
+    |<tt>FLOAT</tt>|<tt>Type::Float</tt>|direct conversion
+    |<tt>DOUBLE</tt>|<tt>Type::Float</tt>|direct conversion
+    |<tt>DATETIME</tt>|<tt>Type::Date</tt>|direct conversion
+    |<tt>DATE</tt>|<tt>Type::Date</tt>|direct conversion
+    |<tt>TIME</tt>|<tt>Type::Date</tt>|direct conversion; the date portion will be set to January 1, 1970 (start of Qore's 64-bit epoch)
+    |<tt>TIMESTAMP</tt>|<tt>Type::Date</tt>|direct conversion
+    |<tt>CHAR</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>VARCHAR</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>TEXT</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>TINYTEXT</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>MEDIUMTEXT</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>LONGTEXT</tt>|<tt>Type::String</tt>|direct conversion
+    |<tt>BLOB</tt>|<tt>Type::Binary</tt>|direct conversion
+    |<tt>TINYBLOB</tt>|<tt>Type::Binary</tt>|direct conversion
+    |<tt>MEDIUMBLOB</tt>|<tt>Type::Binary</tt>|direct conversion
+    |<tt>LONGBLOB</tt>|<tt>Type::Binary</tt>|direct conversion
+    |<tt>BINARY</tt>|<tt>Type::Binary</tt>|direct conversion
+    |<tt>VARBINARY</tt>|<tt>Type::Binary</tt>|direct conversion
+    |<tt>ENUM</tt>|<tt>Type::String</tt>|returned as string value
+    |<tt>SET</tt>|<tt>Type::String</tt>|returned as comma-separated string value
+    |<tt>JSON</tt>|<tt>Type::String</tt>|returned as JSON string (MySQL 5.7+)
+
+    @section mysql_binding_by_value Binding By Value
+
+    |!Qore Type|!MySQL Type|!Description
+    |<tt>Type::String</tt>|<tt>MYSQL_TYPE_STRING</tt>|string data is mapped directly after any character encoding conversions (if necessary)
+    |<tt>Type::Date</tt>|<tt>MYSQL_TYPE_DATETIME</tt>|direct mapping of data
+    |<tt>Type::Binary</tt>|<tt>MYSQL_TYPE_BLOB</tt>|direct mapping of data
+    |<tt>Type::Boolean</tt>|<tt>MYSQL_TYPE_LONG</tt>|True=1, False=0
+    |<tt>Type::Int</tt>|<tt>MYSQL_TYPE_LONGLONG</tt>|direct mapping of data
+    |<tt>Type::Float</tt>|<tt>MYSQL_TYPE_DOUBLE</tt>|direct mapping of data
+    |<tt>Type::Number</tt>|<tt>MYSQL_TYPE_STRING</tt>|direct conversion to a string (this is the only input type MySQL provides for numeric/decimal values)
+*/

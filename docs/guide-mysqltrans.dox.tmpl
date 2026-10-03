@@ -1,0 +1,12 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page mysqltransguide Transaction Management
+
+    @tableofcontents
+
+    This driver sets new connections to use transaction isolation level <tt>read committed</tt> explicitly for every new connection to conform to Qore's default transaction management style.
+
+    The transaction level can be changed manually, however, using the <tt>Datasource::exec()</tt> method.
+
+    Additionally the <tt>CLIENT_FOUND_ROWS</tt> option is set for each connection, so <tt>Datasource::exec()</tt> will return the number of rows affected by insert/update queries, etc in a manner consistent with other Qore DBI drivers (if this option is not set and a single row is updated with the same values, 0 would be returned instead of 1 which would not conform to the behavior of other Qore DBI drivers).
+*/

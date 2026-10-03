@@ -85,6 +85,13 @@ set(module_name "mysql")
 
 set(QORE_DOX_TMPL_SRC
   docs/mainpage.dox.tmpl
+    docs/guide-mysqlbind.dox.tmpl
+    docs/guide-mysqlerrorinfo.dox.tmpl
+    docs/guide-mysqlnativebulkload.dox.tmpl
+    docs/guide-mysqloptions.dox.tmpl
+    docs/guide-mysqlreleasenotes.dox.tmpl
+    docs/guide-mysqlstoredprocs.dox.tmpl
+    docs/guide-mysqltrans.dox.tmpl
 )
 
 add_library(${module_name} MODULE ${CPP_SRC})

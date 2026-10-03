@@ -22,6 +22,7 @@ DOX = mysql
 DOXYGEN_OUTPUT = docs/mysql/html
 
 DOXYFILES = docs/doxyfile docs/mainpage.dox
+DOXYFILES += docs/guide-mysqlreleasenotes.dox docs/guide-mysqlstoredprocs.dox docs/guide-mysqlbind.dox docs/guide-mysqlerrorinfo.dox docs/guide-mysqltrans.dox docs/guide-mysqloptions.dox docs/guide-mysqlnativebulkload.dox
 DOXYFILES_SRC = docs/doxyfile.tmpl docs/footer_template.html
 QDX = qdx
 DX_CLEANFILES = ${DOXYFILES}
@@ -36,6 +37,28 @@ docs/mainpage.dox: docs/mainpage.dox.tmpl
 
 docs/doxyfile: docs/doxyfile.tmpl
 	sed -e s/__VERSION__/${VERSION}/ -e s:__USERMODDIR__:${usermoddir}: $< > $@
+
+docs/guide-mysqlreleasenotes.dox: docs/guide-mysqlreleasenotes.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-mysqlstoredprocs.dox: docs/guide-mysqlstoredprocs.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-mysqlbind.dox: docs/guide-mysqlbind.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-mysqlerrorinfo.dox: docs/guide-mysqlerrorinfo.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-mysqltrans.dox: docs/guide-mysqltrans.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-mysqloptions.dox: docs/guide-mysqloptions.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-mysqlnativebulkload.dox: docs/guide-mysqlnativebulkload.dox.tmpl
+	$(QDX) -d $< $@
+
 
 doxygen-doc: $(DOXYGEN_OUTPUT)
 
@@ -63,3 +86,12 @@ else
 doxygen-doc:
 	echo no doxygen support
 endif
+
+# Documentation guide sources shipped with the module.
+EXTRA_DIST += docs/guide-mysqlreleasenotes.dox.tmpl \
+	docs/guide-mysqlstoredprocs.dox.tmpl \
+	docs/guide-mysqlbind.dox.tmpl \
+	docs/guide-mysqlerrorinfo.dox.tmpl \
+	docs/guide-mysqltrans.dox.tmpl \
+	docs/guide-mysqloptions.dox.tmpl \
+	docs/guide-mysqlnativebulkload.dox.tmpl

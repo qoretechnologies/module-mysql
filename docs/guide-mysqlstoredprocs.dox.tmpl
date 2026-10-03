@@ -1,0 +1,30 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page mysqlstoredprocsguide Stored Procedures
+
+    @tableofcontents
+
+    With appropriate versions of MySQL (version 5+), stored procedure execution is supported; the following is an example of a stored procedure call:
+
+    Example MySQL function:
+    @code{.py}
+delimiter //
+create procedure get_family (in id int, out fname varchar(32))
+begin
+   select name into fname from family where family_id = id;
+end;
+//
+    @endcode
+
+    Qore code to call this function:
+    @code{.py}
+hash result = db.exec("call get_family(%v, :name)", 1);
+printf("%N\n", result);
+    @endcode
+
+    Resulting in:
+    @code{.py}
+hash: (1 member)
+  name : "Smith"
+    @endcode
+*/

@@ -1,0 +1,77 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page mysqlreleasenotesguide Release Notes
+
+    @tableofcontents
+
+    @section mysql2_2 mysql Driver Version 2.2
+    - added the \c alterr, \c alterr_code, and \c alterr_diag keys to the argument hash of every
+      exception raised for a MySQL error, so that errors such as a deadlock can be classified from
+      machine-readable codes; see @ref mysqlerrorinfo
+    - fixed errors raised for a prepared statement being reported from the connection instead of
+      from the statement; a client-side statement error is not reported on the connection, so such
+      errors were reported with stale or empty text
+    - fixed the text of a MySQL error being used as a \c printf() format string when raising an
+      exception, so that an error message containing format characters was rendered from unrelated
+      arguments
+    - added opt-in callback-driven native bulk loading with \c DBI_CAP_HAS_BULK_LOAD
+    - added transactional multi-block cleanup with an internal savepoint, strict warning handling,
+      exact callback-payload stream accounting, and cooperative cancellation
+    - added dynamic fallback when server \c local_infile is disabled, the table engine is not
+      transactional, or identifiers are not eligible
+    - denied arbitrary client-side file reads from raw \c LOAD \c DATA \c LOCAL \c INFILE SQL
+
+    @section mysql2_1 mysql Driver Version 2.1
+    <b>New Features and Bug Fixes</b>
+    - updated build to use the latest %Qore APIs
+    - fixed error message in \c mysql_stmt_api_bind_placeholders() that incorrectly referenced "pgsql" driver
+    - fixed missing error handling in \c MyResult::bind() for \c mysql_stmt_bind_result() failures
+    - fixed debug printf format string mismatch in \c QoreMysqlBindGroup::add()
+    - updated documentation with expanded type mappings and fixed typos
+    - added comprehensive negative test cases for better test coverage
+    - added columnar DBI result support with \c Datasource::selectColumnar() and
+      \c SQLStatement::fetchColumnar() when built against %Qore with columnar DBI APIs
+    - optimized columnar DBI results to return dense buffers for integer, floating-point,
+      and safe \c DECIMAL(p,s) / \c NUMERIC(p,s) columns
+
+    @section mysql2021 mysql Driver Version 2.0.2.1
+    <b>New Features and Bug Fixes</b>
+    - fixed bugs selecting date/time values with sub-second precision
+      (<a href="https://github.com/qorelanguage/qore/issues/3949">issue 3949</a>)
+    - implemented the \c "collation" option to allow the client-side per-connection collation value to be set
+      (<a href="https://github.com/qorelanguage/qore/issues/3753">issue 3753</a>)
+    - updated SQLStatement::fetchColumns() to return an empty hash when no data is available
+      (<a href="https://github.com/qorelanguage/qore/issues/1241">issue 1241</a>)
+    - fixed a bug where \c DBI-SELECT-ROW-ERROR exceptions were being raised as \c MYSQL-SELECT-ROW-ERROR exceptions
+      (<a href="https://github.com/qorelanguage/qore/issues/2542">issue 2542</a>)
+    - fixed selectRow() to properly report errors in fetching data
+      (<a href="https://github.com/qorelanguage/qore/issues/3746">issue 3746</a>)
+
+    @section mysql202 mysql Driver Version 2.0.2
+    - fixed formatting bugs in invalid value specification error messages
+    - updated configure to find and compile with MariaDB and Percona includes and libs
+    - placeholders and quotes in SQL comments are ignored
+    - fixed time column retrieval; the date component is now set to 1970-01-01
+    - fixed \c binary and \c varbinary column handling
+    - fixed the \c "optimal-numbers" option with decimal values with decimal points (<a href="https://github.com/qorelanguage/qore/issues/542">issue 542</a>)
+    - fixed returning result sets with duplicate column names (<a href="https://github.com/qorelanguage/qore/issues/832">issue 832</a>)
+
+    @section mysql201 mysql Driver Version 2.0.1
+
+    <b>Bug Fix</b>
+    - fixed a bug in returning numeric values where numbers with a decimal component were being returned as integers when the default option \c "optimal-numbers" was enabled
+
+    @section mysql20 mysql Driver Version 2.0
+
+    <b>New Features and Bug Fixes</b>
+    - implemented support for the selectRow DBI method
+    - implemented support for the prepared statement API; the driver uses MySQL's prepared statement API internall to bind to Qore's DBI prepared statement API
+    - implemented support for binding and retrieving "number" types
+    - implemented support for the following DBI options:
+      - \c "optimal-numbers": return numeric types as an integer if possible, if not as an arbitrary-precision number
+      - \c "string-numbers": return numeric types as strings (for backwards-compatibility)
+      - \c "numeric-numbers": return numeric types as arbitrary-precision number values
+      - \c "timezone": accepts a string argument that can be either a region name (ex: \c "Europe/Prague") or a UTC offset (ex: \c "+01:00") to set the server's time zone rules; this is useful if connecting to a database server in a different time zone.  If this option is not set then the server's time zone is assumed to be the same as the client's time zone; see @ref mysqltimezone.
+    - the default for the number options (see @ref mysql_number_options) is now "optimal-numbers" - meaning that \c NUMERIC or \c DECIMAL values are retrieved as <tt>int</tt> if possible, otherwise a <tt>number</tt> type is returned.\n
+      For backwards-compatibility, set the \c "string-numbers" option to return \c NUMERIC or \c DECIMAL values as strings.
+*/

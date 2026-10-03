@@ -1,0 +1,63 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page mysqlnativebulkloadguide Native LOAD DATA Bulk Loading
+
+    @tableofcontents
+
+    When built against a %Qore library with the native bulk-load DBI API and a compatible MySQL or
+    MariaDB client library, this driver implements \c DBI_CAP_HAS_BULK_LOAD with callback-driven
+    \c LOAD \c DATA \c LOCAL \c INFILE.  No file is created or read: each BulkSqlUtil block is
+    serialized in memory and supplied synchronously through \c mysql_set_local_infile_handler().
+    The native path is insert-only and remains explicitly opt-in.
+
+    @code{.py}
+%requires BulkSqlUtil
+%requires SqlUtil
+
+Datasource ds("mysql:user/password@db%host:3306");
+SqlUtil::AbstractTable table = (new SqlUtil::Table(ds, "event_log")).getTable();
+BulkSqlUtil::BulkInsertOperation op(table, {
+    "bulk_load": True,       # require native loading; "auto" permits fallback
+    "block_size": 1000,
+});
+on_error {
+    op.discard();
+    ds.rollback();
+}
+map op.queueData($1), events.iterator();
+op.flush();
+op.endStream();
+ds.commit();
+    @endcode
+
+    Native loading is dynamically available only when the server's global \c local_infile setting is
+    enabled and the target table uses the transactional \c InnoDB or \c XtraDB engine. Table and
+    column names must be simple, unquoted MySQL identifiers; a table may be qualified once by its
+    schema. \c "bulk_load": \c "auto" uses the ordinary insert path when these conditions are not
+    met, while \c True reports that the required native path is unavailable.
+
+    The driver supports NULL, boolean, integer, finite floating-point, arbitrary-precision number,
+    string, binary, and absolute date/time Qore values. Strings and binary data preserve NUL, tab,
+    newline, carriage-return, backslash, and Control-Z bytes through MySQL's text-load escaping.
+    Relative date/time values and container/object values are rejected by the native serializer.
+    Identifiers are limited to MySQL's 64-byte per-component maximum.
+    MySQL warnings, including conversion and duplicate-key warnings, fail the operation so that the
+    internal savepoint can roll the entire native load back instead of silently accepting partial or
+    truncated data.
+
+    A savepoint spans all native blocks. Successful completion releases the savepoint but does not
+    commit; the loaded rows participate in the caller's transaction and can still be rolled back with
+    \c Datasource::rollback(). Aborting the operation rolls back only to the internal savepoint, so
+    transaction work performed before the bulk load is preserved. Connection close and explicit
+    transaction rollback abort an active native load, and commit is rejected while one is active.
+
+    The driver owns mutation-observer stream events on the native path. Consumed bytes are the exact
+    callback payload, including field separators, line terminators, and extra escape bytes. The
+    ordinary fallback remains owned by BulkSqlUtil. The only supported native option is the common
+    \c "stream_bounds" boolean passed by BulkSqlUtil.
+
+    @note Connections built with native support enable the client protocol capability required by
+    \c LOCAL \c INFILE, but install a permanent deny-by-default callback. Raw SQL cannot make the
+    client read an arbitrary local path; only the internal in-memory source is exposed while a native
+    bulk block is active.
+*/
