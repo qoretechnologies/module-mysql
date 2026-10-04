@@ -84,6 +84,7 @@ set(CPP_SRC
 set(module_name "mysql")
 
 set(QORE_DOX_TMPL_SRC
+    docs/guide-mysqlcapabilities.dox.tmpl
   docs/mainpage.dox.tmpl
     docs/guide-mysqlbind.dox.tmpl
     docs/guide-mysqlerrorinfo.dox.tmpl
