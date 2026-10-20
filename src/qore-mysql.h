@@ -645,6 +645,8 @@ public:
     DLLLOCAL int bind(const QoreListNode& l, ExceptionSink* xsink);
     DLLLOCAL int define(ExceptionSink* xsink);
     DLLLOCAL int exec(ExceptionSink* xsink);
+    // describes the result columns of the prepared statement without executing it
+    DLLLOCAL int execDescribe(ExceptionSink* xsink);
     DLLLOCAL QoreHashNode* fetchRow(ExceptionSink* xsink);
     DLLLOCAL QoreListNode* fetchRows(int rows, ExceptionSink* xsink);
     DLLLOCAL QoreHashNode* fetchColumns(int rows, ExceptionSink* xsink);

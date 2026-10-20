@@ -1,0 +1,115 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+#
+# Copyright 2026 Qore Technologies, s.r.o.
+
+%modern
+
+%requires qore >= 3.0
+
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires mysql
+
+%exec-class MysqlDescribeTest
+
+#! verifies that describing a prepared statement neither runs it nor leaves the connection unusable
+/** The driver describes the result columns of a prepared statement from its metadata: an executed statement would
+    leave its result set unread on the connection, so that the next command on the connection, such as a rollback,
+    failed with "Commands out of sync"
+*/
+public class MysqlDescribeTest inherits QUnit::Test {
+    public {
+        const TableName = "qore_mysql_describe_test";
+    }
+
+    private {
+        *string connstr;
+    }
+
+    constructor() : Test("MysqlDescribeTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_MYSQL ?? shift ARGV;
+
+        addTestCase("the connection runs commands after a statement is described", \commandAfterDescribeTest());
+        addTestCase("a described statement is not run", \describeDoesNotRunTest());
+        addTestCase("a described statement can be run", \runAfterDescribeTest());
+
+        set_return_value(main());
+    }
+
+    #! returns an open datasource with a table of two rows, skipping the test when no server is configured
+    private Datasource getDatasource() {
+        if (!connstr.val()) {
+            testSkip("no MySQL connection; set QORE_DB_CONNSTR_MYSQL");
+        }
+        Datasource ds;
+        try {
+            ds = new Datasource(cast<string>(connstr));
+            if (ds.getDriverName() != "mysql") {
+                testSkip(sprintf("connection is for the %y driver, not mysql", ds.getDriverName()));
+            }
+            ds.open();
+        } catch (hash<ExceptionInfo> ex) {
+            testSkip("no MySQL connection: " + ex.err + ": " + ex.desc);
+        }
+        ds.execRaw("drop table if exists " + TableName);
+        ds.execRaw(sprintf("create table %s (id int not null primary key, name varchar(20) not null)", TableName));
+        ds.exec(sprintf("insert into %s values (1, 'one'), (2, 'two')", TableName));
+        ds.commit();
+        return ds;
+    }
+
+    #! drops the test table
+    private dropTable(Datasource ds) {
+        try {
+            ds.rollback();
+            ds.execRaw("drop table if exists " + TableName);
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+        }
+    }
+
+    commandAfterDescribeTest() {
+        Datasource ds = getDatasource();
+        on_exit dropTable(ds);
+
+        AbstractSQLStatement stmt = ds.getSQLStatement();
+        stmt.prepare(sprintf("select id, name from %s where id > %%v", TableName), 0);
+        hash<auto> desc = stmt.describe();
+        assertEq(("id", "name"), keys desc);
+        assertEq(NT_INT, desc.id.type);
+        assertEq("INTEGER", desc.id.native_type);
+        assertEq(NT_STRING, desc.name.type);
+        assertEq("VARCHAR", desc.name.native_type);
+        assertFalse(desc.name.nullable);
+
+        # the connection runs another command while the described statement exists
+        ds.rollback();
+        assertEq(2, ds.selectRow(sprintf("select count(*) as n from %s", TableName)).n);
+        stmt.close();
+    }
+
+    describeDoesNotRunTest() {
+        Datasource ds = getDatasource();
+        on_exit dropTable(ds);
+
+        ds.exec("set @qore_described = null");
+        AbstractSQLStatement stmt = ds.getSQLStatement();
+        # running the statement would set the session variable
+        stmt.prepare(sprintf("select @qore_described := id as id from %s", TableName));
+        assertEq(("id",), keys stmt.describe());
+        stmt.close();
+        assertEq(NULL, ds.selectRow("select @qore_described as v").v, "the described statement was not run");
+    }
+
+    runAfterDescribeTest() {
+        Datasource ds = getDatasource();
+        on_exit dropTable(ds);
+
+        AbstractSQLStatement stmt = ds.getSQLStatement();
+        stmt.prepare(sprintf("select id, name from %s order by id", TableName));
+        assertEq(("id", "name"), keys stmt.describe());
+        assertEq(({"id": 1, "name": "one"}, {"id": 2, "name": "two"}), stmt.fetchRows());
+        stmt.close();
+    }
+}

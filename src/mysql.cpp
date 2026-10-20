@@ -1840,6 +1840,18 @@ int QoreMysqlPreparedStatement::exec(ExceptionSink* xsink) {
    return execIntern(xsink);
 }
 
+//! describes the result columns of the prepared statement from its metadata, without executing it
+/** MySQL gives the result set metadata of a prepared statement after it is prepared.  An executed statement leaves its
+    result set unread on the connection, so that the connection cannot run another command (\c "Commands out of
+    sync") until the statement is closed; a statement that is only described is not executed, so nothing is run and
+    the connection stays usable.  %Qore closes the statement after describing it this way.
+*/
+int QoreMysqlPreparedStatement::execDescribe(ExceptionSink* xsink) {
+   assert(stmt);
+   myres.set(stmt);
+   return 0;
+}
+
 QoreHashNode* QoreMysqlPreparedStatement::fetchRow(ExceptionSink* xsink) {
    if (!myres) {
       xsink->raiseException("DBI:MYSQL-FETCH-ROW-ERROR", "call SQLStatement::next() before calling SQLStatement::fetchRow()");
@@ -2065,6 +2077,15 @@ static int mysql_stmt_api_exec(SQLStatement* stmt, ExceptionSink* xsink) {
 
    return bg->exec(xsink);
 }
+
+#ifdef QDBI_METHOD_STMT_EXEC_DESCRIBE
+static int mysql_stmt_api_exec_describe(SQLStatement* stmt, ExceptionSink* xsink) {
+   QoreMysqlPreparedStatement* bg = (QoreMysqlPreparedStatement*)stmt->getPrivateData();
+   assert(bg);
+
+   return bg->execDescribe(xsink);
+}
+#endif
 
 static int mysql_stmt_api_define(SQLStatement* stmt, ExceptionSink* xsink) {
    QoreMysqlPreparedStatement* bg = (QoreMysqlPreparedStatement*)stmt->getPrivateData();
@@ -2611,6 +2632,9 @@ static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xs
     methods.add(QDBI_METHOD_STMT_BIND_PLACEHOLDERS, mysql_stmt_api_bind_placeholders);
     methods.add(QDBI_METHOD_STMT_BIND_VALUES, mysql_stmt_api_bind_values);
     methods.add(QDBI_METHOD_STMT_EXEC, mysql_stmt_api_exec);
+#ifdef QDBI_METHOD_STMT_EXEC_DESCRIBE
+    methods.add(QDBI_METHOD_STMT_EXEC_DESCRIBE, mysql_stmt_api_exec_describe);
+#endif
     methods.add(QDBI_METHOD_STMT_DEFINE, mysql_stmt_api_define);
     methods.add(QDBI_METHOD_STMT_FETCH_ROW, mysql_stmt_api_fetch_row);
     methods.add(QDBI_METHOD_STMT_FETCH_ROWS, mysql_stmt_api_fetch_rows);

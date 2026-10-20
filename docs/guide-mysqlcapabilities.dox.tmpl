@@ -32,6 +32,9 @@
 
     Statement result metadata is available through @ref Qore::SQL::SQLStatement::describe() "SQLStatement::describe()". This is separate from
     datasource-level @ref Qore::SQL::Datasource::describe() "Datasource::describe()" and its @ref Qore::SQL::DBI_CAP_HAS_DESCRIBE "DBI_CAP_HAS_DESCRIBE" flag.
+    A statement that has not been run is described from the metadata of the prepared statement, without running it,
+    and is closed afterwards, so the connection can run other commands; a statement that has been run is described
+    from its result set.
 
     @section mysqlcapabilitiescolumnar Columnar Results
 
