@@ -25,6 +25,14 @@ echo "export QORE_GID=999" >> ${ENV_FILE}
 
 export MAKE_JOBS=4
 
+# The distro ARM64 connector has incomplete coroutine asm clobbers under LTO.
+if [ "$(uname -m)" = aarch64 ]; then
+    connector_root=$(mktemp -d /tmp/qore-mariadb.XXXXXX)
+    "${MODULE_SRC_DIR}/patches/build-mariadb.sh" "$connector_root"
+    export LD_LIBRARY_PATH="$connector_root/install/lib/mariadb:${LD_LIBRARY_PATH:-}"
+fi
+python3 "${MODULE_SRC_DIR}/test/mariadb-async-context.py"
+
 # build module and install
 echo && echo "-- building module --"
 mkdir -p ${MODULE_SRC_DIR}/build
@@ -39,6 +47,9 @@ useradd -o -m -d /home/qore -u ${QORE_UID} -g ${QORE_GID} qore
 
 # own everything by the qore user
 chown -R qore:qore ${MODULE_SRC_DIR}
+if [ -n "${connector_root:-}" ]; then
+    chown -R qore:qore "$connector_root"
+fi
 
 # run the tests
 export QORE_MODULE_DIR=${MODULE_SRC_DIR}/qlib:${QORE_MODULE_DIR}
@@ -63,5 +74,5 @@ if [ ${db_ready} -eq 0 ]; then
 fi
 
 for test in test/*.qtest; do
-    gosu qore:qore qore $test -vv
+    gosu qore:qore qore -b --enable-debug "$test" -vv
 done

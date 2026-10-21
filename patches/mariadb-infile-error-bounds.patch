@@ -1,0 +1,23 @@
+Copyright 2026 Qore Technologies, s.r.o.
+Subject: Reserve the terminator when copying local infile error messages
+
+--- a/libmariadb/ma_loaddata.c
++++ b/libmariadb/ma_loaddata.c
+@@ -131,12 +131,16 @@
+   MYSQL_INFILE_INFO *info = (MYSQL_INFILE_INFO *)ptr;
+ 
+   if (info) {
+-    ma_strmake(error_buf, info->error_msg, error_buf_len);
++    if (error_buf_len) {
++      ma_strmake(error_buf, info->error_msg, error_buf_len - 1);
++    }
+     return(info->error_no);
+   }
+ 
+-  ma_strmake(error_buf, "Unknown error", error_buf_len);
++  if (error_buf_len) {
++    ma_strmake(error_buf, "Unknown error", error_buf_len - 1);
++  }
+   return(CR_UNKNOWN_ERROR);
+ }
+ /* }}} */

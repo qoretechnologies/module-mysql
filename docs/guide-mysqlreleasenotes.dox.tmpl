@@ -7,6 +7,9 @@
     @section mysql2_2 mysql Driver Version 2.2
     - added \c connect-timeout and cancellable MariaDB connection establishment and session initialization
     - raised the build language requirement to C++17, matching the current Qore headers
+    - included a native MariaDB Connector/C ARM64 coroutine fix and regression test in the source
+      distribution; ARM64 installations require the corrected client library described in
+      \c patches/README.rst
 
     - fixed \c SQLStatement::describe() running a statement that was not run yet and leaving its result set unread on
       the connection, so that the next command on the connection, such as a rollback, failed with "Commands out of

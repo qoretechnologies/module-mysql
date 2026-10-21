@@ -36,6 +36,11 @@ See COPYING.LGPL and COPYING.GPL for details on the open-source licenses.
 BUILD AND INSTALL
 -----------------
 
+ARM64 MariaDB users: apply the native connector correction documented in
+patches/README.rst before deploying asynchronous connection support. Upstream
+Connector/C through 3.4.11 has incomplete ARM64 coroutine register declarations
+that can corrupt connection state when compiled with link-time optimization.
+
 If your mysql/mariadb installation is in a non-standard location, set one of the following environment variables before running configure:
 * MYSQL_DIR: the main mysql/mariadb directory (include and lib subdirs must be present)
 * MYSQL_INCLUDES: the directory containing the mysql/mariadb header files

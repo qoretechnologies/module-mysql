@@ -7,6 +7,13 @@ noinst_HEADERS = src/qore-mysql.h \
 
 EXTRA_DIST = COPYING.LGPL COPYING.GPL ChangeLog AUTHORS README \
 	RELEASE-NOTES \
+	patches/README.rst \
+	patches/build-mariadb.sh \
+	patches/mariadb-aarch64-clobbers.patch \
+	patches/mariadb-infile-error-bounds.patch \
+	test/mariadb-async-context.py \
+	test/mariadb-infile-error.c \
+	test/connection-setup.qtest \
 	test/db-test.q \
 	test/mysql-native-bulk-load.qtest \
 	test/sql-stmt.q \

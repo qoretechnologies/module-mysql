@@ -83,3 +83,38 @@ No new module/class build registration is required. The JNI fixture source is re
 This audit does not claim arbitrary third-party DB clients enforce per-host sandbox policy or provide
 interruptible login; the existing DATABASE functional-domain boundary is unchanged.
 Raw verification logs and native-library control runs: /tmp/db-connect-audit-x6bnghwe/.
+
+Follow-up audit: native MariaDB client corrections (2026-10-21)
+Scope: patches/, native regression fixtures, CI scripts, source distribution and docs.
+Every checklist row above was re-evaluated for this follow-up. Module/QPP/DataProvider
+registration remains N/A; existing Qore/C++ implementation reviews remain unchanged.
+- Pass: ARM64 coroutine spawn/continue/yield now declare every caller-clobbered integer
+  register. Disassembly of Ubuntu 3.4.9 shows live state in omitted x12/w16 across
+  an inlined switch. Three native loopback tests fail with invalid wait masks on the
+  original client and pass with the corrected 3.4.11 client, compiled with LTO enabled.
+- Pass: default native infile error callback reserves its terminator and does not
+  touch zero-capacity buffers. Twelve null-context/file-error buffer cases reproduce
+  failure on the original library and pass after correction. The source buffer's
+  original capacity is unchanged.
+- Pass: pinned source commit plus SHA-256; no credentials; isolated installation
+  prefix; no system-library replacement, disabled LTO or blocking fallback.
+- Pass: CI retains the native fix across ARM64 runs and gives the test user access
+  to the isolated library. Both scripts now run Qore tests with debugging enabled.
+- Pass: no new production socket/file operation, long loop, mutable shared state or
+  throwing C++ allocation. Native test handles/threads are cleaned up on failure;
+  loopback waits have finite deadlines and no periodic retries.
+- Pass: Release/LTO connector build and three native loopback cases on x86 and ARM64;
+  ARM64 full MySQL suite: 43 cases, 229 assertions. Debug ARM64 connector with
+  HAVE_VALGRIND: six Qore connection cases, zero lost bytes, zero unsuppressed errors.
+  Native infile fixture: twelve cases, zero leaks and zero Memcheck errors on x86.
+  The host NSS/SSSD library emits an fstat(-1) diagnostic during mysql_init service
+  discovery; its stack is outside the connector and module. ARM64 Qore run has no
+  such diagnostic. The normal tests/builds have no warnings or errors.
+- Pass: shell syntax, Python compilation, negative script argument validation,
+  executable test/build script permissions and git diff --check.
+- Pass: native deployment requirements, patch rationale, build/test examples and
+  release notes updated; Automake distribution includes both patches and fixtures.
+  Documentation generates successfully with no Doxygen warnings; qjar emits the
+  installed HotSpot signal-chaining deprecation diagnostic during Java metadata
+  generation, independently of these source changes.
+- Pass: new files carry 2026 copyright; upstream source notices are retained.
