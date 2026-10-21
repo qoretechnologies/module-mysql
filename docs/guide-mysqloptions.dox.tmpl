@@ -4,6 +4,23 @@
 
     @tableofcontents
 
+    @section mysql_connect_timeout Connection establishment
+
+    The \c connect-timeout option accepts an integer from 0 to 2147483 seconds (default 0, the native
+    client default). It is applied before connecting and takes effect again on reconnection. A finite
+    timeout bounds a silent server handshake according to the native client's timeout semantics.
+    @par Example
+    @code{.py}
+    Datasource ds("mysql:app/pass@orders%db.internal:3306{connect-timeout=5}");
+    ds.open();
+    @endcode
+    When built with MariaDB Connector/C's asynchronous API and Qore's cancellable poll API, connection
+    establishment and its initial charset, autocommit and isolation commands support thread cancellation
+    and program interruption without waiting for the server. The boolean constant
+    \c Qore::MYSQL_HAVE_CANCELLABLE_CONNECT reports this build capability. Other client libraries use their blocking
+    connection API and report a pending cancellation after that call returns; configure a finite timeout.
+
+
     When compiled again Qore 0.8.6+ the mysql driver support the following DBI options:
     - \c "collation": sets the client-side per-connection collation for string values
     - \c "optimal-numbers": return numeric types as an integer if possible, if not as an arbitrary-precision number

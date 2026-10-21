@@ -289,10 +289,10 @@ else
    bits=32
 fi
 
-# test for C++11
-AX_CXX_COMPILE_STDCXX_11([noext], [mandatory])
-if test "$HAVE_CXX11" = "1"; then
-    AM_CXXFLAGS=-std=gnu++11
+# test for C++17
+AX_CXX_COMPILE_STDCXX([17], [noext], [mandatory])
+if test "$HAVE_CXX17" = "1"; then
+    AM_CXXFLAGS=-std=gnu++17
 fi
 
 # checks for how to build threads
@@ -621,6 +621,9 @@ MYSQL mysql; mysql_init(&mysql);
            AC_DEFINE(HAVE_MYSQL_SET_CHARACTER_SET, 1, [Define if mysql_set_character_set() is available])
         fi
         # check for mysql_library_init
+        if test -n "`grep mysql_real_connect_start ${with_mysql_includes}/*.h`"; then
+           AC_DEFINE(HAVE_MYSQL_REAL_CONNECT_START, 1, [Define if the MariaDB nonblocking connection API is available])
+        fi
         if test -n "`grep mysql_library_init ${with_mysql_includes}/*.h`"; then
            AC_DEFINE(HAVE_MYSQL_LIBRARY_INIT, 1, Define if mysql_library_init and mysql_library_end functions are available)
         fi

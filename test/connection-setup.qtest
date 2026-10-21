@@ -1,0 +1,128 @@
+#!/usr/bin/env qore
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+# SPDX-License-Identifier: MIT
+%modern
+%no-child-restrictions
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires mysql
+%exec-class ConnectionSetupTest
+
+class ConnectionSetupTest inherits QUnit::Test {
+    constructor() : Test("mysql connection setup", "1.0", \ARGV) {
+        addTestCase("native connection timeout", \timeout());
+        addTestCase("thread cancellation during connection", \cancel());
+        addTestCase("program interruption during connection", \interrupt());
+        addTestCase("peer closure preserves the native error", \peerClosed());
+        addTestCase("invalid timeout values", \invalidTimeout());
+        addTestCase("zero timeout accepts peer closure", \zeroTimeout());
+        set_return_value(main());
+    }
+
+    private hash<auto> config(int port, int seconds) {
+        return {"type": "mysql", "host": "127.0.0.1", "port": port, "db": "nothing",
+            "user": "nobody", "pass": "nothing", "options": {"connect-timeout": seconds}};
+    }
+
+    # The accepted socket is a deterministic barrier: the driver is inside connection setup.
+    # A timeout bounds test failures; peer cleanup releases native libraries that cannot cancel login.
+    private hash<auto> attempt(string mode) {
+        Socket server();
+        server.bind("127.0.0.1:0", True);
+        server.listen();
+        hash<auto> cfg = config(server.getSocketInfo().port, mode == "zero" ? 0 : (mode == "timeout" ? 1 : 5));
+        Queue done();
+        SandboxManager sm();
+        Program p(PO_NO_CHILD_PO_RESTRICTIONS);
+        p.loadModule("mysql");
+        if (mode == "interrupt") {
+            p.setSandboxManager(sm);
+        }
+        p.parse("%modern
+sub run(Queue done, hash<auto> cfg) {
+    hash<auto> result;
+    try {
+        Datasource ds(cfg);
+        ds.open();
+        result.err = \"NONE\";
+    } catch (hash<ExceptionInfo> ex) {
+        result.err = ex.err;
+        result.desc = ex.desc;
+    }
+    done.push(result);
+}", "connection-setup-worker");
+        int tid = background p.callFunction("run", done, cfg);
+        *Socket peer = server.accept(5s);
+        if (!peer) {
+            hash<auto> result = done.get(1s);
+            fail(sprintf("driver did not contact the fixture: %y", result));
+        }
+        on_exit {
+            peer.shutdown();
+            peer.close();
+            server.close();
+        }
+        int start = clock_get_monotonic_us();
+        if (mode == "cancel") {
+            cancel_thread(tid, "connection test cancellation");
+        } else if (mode == "interrupt") {
+            sm.requestInterrupt();
+        }
+        if (mode == "close" || mode == "zero"
+                || (!MYSQL_HAVE_CANCELLABLE_CONNECT && (mode == "cancel" || mode == "interrupt"))) {
+            peer.shutdown();
+            peer.close();
+        }
+        hash<auto> result;
+        try {
+            result = done.get(3s);
+        } catch (hash<ExceptionInfo> ex) {
+            peer.shutdown();
+            peer.close();
+            done.get(10s);
+            rethrow;
+        }
+        result.elapsed = clock_get_monotonic_us() - start;
+        return result;
+    }
+
+    timeout() {
+        hash<auto> result = attempt("timeout");
+        assertEq("DBI:MYSQL:CONNECT-ERROR", result.err);
+        assertTrue(result.elapsed >= 500000, "the driver waited for the configured timeout");
+        assertTrue(result.elapsed < 2500000, "configured timeout bounds connection setup");
+    }
+    cancel() {
+        hash<auto> result = attempt("cancel");
+        assertEq("THREAD-CANCELLED", result.err);
+        assertTrue(result.elapsed < 2000000);
+        assertTrue(index(result.desc, "connection test cancellation") >= 0);
+    }
+    interrupt() {
+        hash<auto> result = attempt("interrupt");
+        assertEq("PROGRAM-INTERRUPTED", result.err);
+        assertTrue(result.elapsed < 2000000);
+    }
+    peerClosed() {
+        assertEq("DBI:MYSQL:CONNECT-ERROR", attempt("close").err);
+    }
+    zeroTimeout() {
+        assertEq("DBI:MYSQL:CONNECT-ERROR", attempt("zero").err);
+    }
+    invalidTimeout() {
+        foreach auto value in (-1, 2147484, 9223372036854775807, "invalid", 1.5) {
+            hash<auto> cfg = config(1, 1);
+            hash<auto> options;
+            options{"connect-timeout"} = value;
+            cfg.options = options;
+            try {
+                Datasource ds(cfg);
+                ds.open();
+                fail(sprintf("invalid timeout accepted: %y", value));
+            } catch (hash<ExceptionInfo> ex) {
+                assertTrue(ex.err == "MYSQL-OPTION-ERROR" || ex.err == "DBI-OPTION-ERROR",
+                    sprintf("timeout must fail before network access: %s", ex.err));
+            }
+        }
+    }
+}

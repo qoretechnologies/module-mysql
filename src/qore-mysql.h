@@ -50,6 +50,7 @@ typedef bool my_bool;
 #endif
 
 #define MYSQL_OPT_COLLATION "collation"
+#define QORE_MYSQL_OPT_CONNECT_TIMEOUT "connect-timeout"
 
 class QoreMysqlConnection;
 #ifdef QORE_MYSQL_HAVE_BULK_LOAD
@@ -243,6 +244,8 @@ public:
 };
 
 DLLLOCAL MYSQL* qore_mysql_init(Datasource *ds, ExceptionSink* xsink);
+//! Validates a connection timeout in seconds; zero selects the native client default.
+DLLLOCAL int qore_mysql_connect_timeout(QoreValue value, unsigned int& timeout, ExceptionSink* xsink);
 DLLLOCAL int mysql_set_collation(MYSQL* db, const char* collation_str, ExceptionSink* xsink);
 
 //! exception argument key holding the SQLSTATE of a MySQL error
@@ -325,6 +328,7 @@ public:
     const AbstractQoreZoneInfo* server_tz;
     int numeric_support;
     std::string collation;
+    unsigned int connect_timeout = 0;
 #ifdef QORE_MYSQL_HAVE_BULK_LOAD
     QoreMysqlBulkLoadState* bulk_load;
 #endif
@@ -422,6 +426,9 @@ public:
     }
 
     DLLLOCAL int setOption(const char* opt, const QoreValue val, ExceptionSink* xsink) {
+        if (!strcasecmp(opt, QORE_MYSQL_OPT_CONNECT_TIMEOUT)) {
+            return qore_mysql_connect_timeout(val, connect_timeout, xsink);
+        }
         if (!strcasecmp(opt, DBI_OPT_NUMBER_OPT)) {
             numeric_support = OPT_NUM_OPTIMAL;
             return 0;
@@ -463,6 +470,9 @@ public:
     }
 
     DLLLOCAL QoreValue getOption(const char* opt) {
+        if (!strcasecmp(opt, QORE_MYSQL_OPT_CONNECT_TIMEOUT)) {
+            return static_cast<int64>(connect_timeout);
+        }
         if (!strcasecmp(opt, DBI_OPT_NUMBER_OPT))
             return numeric_support == OPT_NUM_OPTIMAL;
 

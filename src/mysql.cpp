@@ -50,6 +50,10 @@
 
 #include <vector>
 #include <string>
+#include <climits>
+#include <algorithm>
+#include <cerrno>
+#include <poll.h>
 
 typedef std::vector<std::string> strvec_t;
 
@@ -240,6 +244,97 @@ static DateTimeNode* qore_mysql_makedt(const QoreMysqlConnection& conn, int year
     return DateTimeNode::makeAbsolute(conn.getTZ(), year, month, day, hour, minute, second, us);
 }
 
+int qore_mysql_connect_timeout(QoreValue value, unsigned int& timeout, ExceptionSink* xsink) {
+    int64 seconds = value.getAsBigInt();
+    if (value.getType() != NT_INT || seconds < 0 || seconds > INT_MAX / 1000) {
+        xsink->raiseException("MYSQL-OPTION-ERROR", "'connect-timeout' must be an integer between 0 and %d seconds",
+            INT_MAX / 1000);
+        return -1;
+    }
+    timeout = static_cast<unsigned int>(seconds);
+    return 0;
+}
+
+// MariaDB exposes the socket and readiness direction throughout connection and initialization.
+// Wait together with Qore's cancellation descriptor, without periodic timeout slices.
+#if defined(HAVE_MYSQL_REAL_CONNECT_START) && defined(_QORE_HAS_CANCELLABLE_POLL)
+template <typename Resume>
+static bool mysql_finish_connect_operation(MYSQL* db, int status, Resume resume, ExceptionSink* xsink) {
+    while (status) {
+        pollfd fd = {static_cast<int>(mysql_get_socket(db)), 0, 0};
+        if (status & MYSQL_WAIT_READ) {
+            fd.events |= POLLIN;
+        }
+        if (status & MYSQL_WAIT_WRITE) {
+            fd.events |= POLLOUT;
+        }
+        if (status & MYSQL_WAIT_EXCEPT) {
+            fd.events |= POLLPRI;
+        }
+        if (fd.fd < 0 && fd.events) {
+            xsink->raiseException("DBI:MYSQL:CONNECT-ERROR", "invalid MySQL connection socket");
+            return false;
+        }
+        unsigned int timeout = mysql_get_timeout_value_ms(db);
+        int timeout_ms = status & MYSQL_WAIT_TIMEOUT
+            ? static_cast<int>(std::min(timeout, static_cast<unsigned int>(INT_MAX))) : -1;
+        int rc = qore_cancellable_poll(&fd, 1, timeout_ms, xsink, "connecting to the MySQL server");
+        if (rc == QORE_POLL_CANCELLED) {
+            return false;
+        }
+        if (rc < 0) {
+            xsink->raiseErrnoException("DBI:MYSQL:CONNECT-ERROR", errno, "connection poll failed");
+            return false;
+        }
+        int ready = 0;
+        if (!rc) {
+            ready = MYSQL_WAIT_TIMEOUT;
+        } else {
+            if (fd.revents & (POLLIN | POLLHUP | POLLERR)) {
+                ready |= MYSQL_WAIT_READ;
+            }
+            if (fd.revents & (POLLOUT | POLLERR)) {
+                ready |= MYSQL_WAIT_WRITE;
+            }
+            if (fd.revents & POLLPRI) {
+                ready |= MYSQL_WAIT_EXCEPT;
+            }
+            if (fd.revents & POLLNVAL) {
+                xsink->raiseException("DBI:MYSQL:CONNECT-ERROR", "invalid MySQL connection socket");
+                return false;
+            }
+        }
+        status = resume(ready);
+    }
+    if (qore_check_cancel(xsink, "connecting to the MySQL server")) {
+        return false;
+    }
+    return true;
+}
+#endif
+
+static MYSQL* mysql_connect_cancellable(MYSQL* db, Datasource* ds, unsigned int port, ExceptionSink* xsink) {
+#if defined(HAVE_MYSQL_REAL_CONNECT_START) && defined(_QORE_HAS_CANCELLABLE_POLL)
+    if (mysql_options(db, MYSQL_OPT_NONBLOCK, nullptr)) {
+        xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not enable nonblocking connection: %s", mysql_error(db));
+        return nullptr;
+    }
+    MYSQL* result = nullptr;
+    int status = mysql_real_connect_start(&result, db, ds->getHostName(), ds->getUsername(), ds->getPassword(),
+        ds->getDBName(), port, nullptr, CLIENT_FOUND_ROWS);
+    if (!mysql_finish_connect_operation(db, status, [&](int ready) {
+            return mysql_real_connect_cont(&result, db, ready);
+        }, xsink)) {
+        return nullptr;
+    }
+    return result;
+#else
+    MYSQL* result = mysql_real_connect(db, ds->getHostName(), ds->getUsername(), ds->getPassword(),
+        ds->getDBName(), port, nullptr, CLIENT_FOUND_ROWS);
+    return qore_check_cancel(xsink, "connecting to the MySQL server") ? nullptr : result;
+#endif
+}
+
 MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
     printd(5, "qore_mysql_init() datasource %p for DB: %s\n", ds, ds->getDBName() ? ds->getDBName() : "unknown");
 
@@ -271,6 +366,22 @@ MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
         xsink->outOfMemory();
         return 0;
     }
+    const QoreHashNode* options = ds->getConnectOptions();
+    if (options) {
+        QoreValue value = options->getKeyValue(QORE_MYSQL_OPT_CONNECT_TIMEOUT);
+        if (!value.isNothing()) {
+            unsigned int timeout;
+            if (qore_mysql_connect_timeout(value, timeout, xsink)) {
+                mysql_close(db);
+                return nullptr;
+            }
+            if (mysql_options(db, MYSQL_OPT_CONNECT_TIMEOUT, &timeout)) {
+                xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not set connection timeout: %s", mysql_error(db));
+                mysql_close(db);
+                return nullptr;
+            }
+        }
+    }
 #ifdef QORE_MYSQL_HAVE_BULK_LOAD
     unsigned int local_infile = 1;
     if (mysql_options(db, MYSQL_OPT_LOCAL_INFILE, &local_infile)) {
@@ -282,36 +393,75 @@ MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
 #endif
     int port = ds->getPort();
 
-    if (!port && ds->getHostName())
+    if (!port && ds->getHostName()) {
         port = MYSQL_PORT;
+    }
 
     printd(3, "qore_mysql_init(): user: '%s' db: '%s' (encoding=%s) host: '%s' port: %d\n",
             ds->getUsername(), ds->getDBName(), ds->getDBEncoding() ? ds->getDBEncoding() : "(none)", ds->getHostName(), port);
 
-    if (!mysql_real_connect(db, ds->getHostName(), ds->getUsername(), ds->getPassword(), ds->getDBName(), port, 0, CLIENT_FOUND_ROWS)) {
-        xsink->raiseExceptionArg("DBI:MYSQL:CONNECT-ERROR", qore_mysql_error_arg(db, xsink), "%s",
-            mysql_error(db));
+    if (!mysql_connect_cancellable(db, ds, port, xsink)) {
+        if (!*xsink) {
+            xsink->raiseExceptionArg("DBI:MYSQL:CONNECT-ERROR", qore_mysql_error_arg(db, xsink), "%s",
+                mysql_error(db));
+        }
         mysql_close(db);
         return 0;
     }
 
+    // Initialization is part of opening the connection and can block on server responses too.
+    int init_error = 0;
 #ifdef HAVE_MYSQL_SET_CHARACTER_SET
-    // set character set
-    mysql_set_character_set(db, ds->getDBEncoding());
-#endif
-
-#ifdef HAVE_MYSQL_COMMIT
-    // autocommits are handled by qore, not by Mysql
-    mysql_autocommit(db, false);
-
-    // set transaction handling
-    if (mysql_query(db, "set session transaction isolation level read committed")) {
-        xsink->raiseExceptionArg("DBI:MYSQL:INIT-ERROR", qore_mysql_error_arg(db, xsink), "%s",
-            mysql_error(db));
+#if defined(HAVE_MYSQL_REAL_CONNECT_START) && defined(_QORE_HAS_CANCELLABLE_POLL)
+    int status = mysql_set_character_set_start(&init_error, db, ds->getDBEncoding());
+    if (!mysql_finish_connect_operation(db, status, [&](int ready) {
+            return mysql_set_character_set_cont(&init_error, db, ready);
+        }, xsink)) {
         mysql_close(db);
         return nullptr;
     }
+#else
+    init_error = mysql_set_character_set(db, ds->getDBEncoding());
 #endif
+#endif
+#ifdef HAVE_MYSQL_COMMIT
+    if (!init_error) {
+#if defined(HAVE_MYSQL_REAL_CONNECT_START) && defined(_QORE_HAS_CANCELLABLE_POLL)
+        my_bool error = false;
+        int status = mysql_autocommit_start(&error, db, false);
+        if (!mysql_finish_connect_operation(db, status, [&](int ready) {
+                return mysql_autocommit_cont(&error, db, ready);
+            }, xsink)) {
+            mysql_close(db);
+            return nullptr;
+        }
+        init_error = error;
+#else
+        init_error = mysql_autocommit(db, false);
+#endif
+    }
+    if (!init_error) {
+        const char* sql = "set session transaction isolation level read committed";
+#if defined(HAVE_MYSQL_REAL_CONNECT_START) && defined(_QORE_HAS_CANCELLABLE_POLL)
+        int status = mysql_real_query_start(&init_error, db, sql, strlen(sql));
+        if (!mysql_finish_connect_operation(db, status, [&](int ready) {
+                return mysql_real_query_cont(&init_error, db, ready);
+            }, xsink)) {
+            mysql_close(db);
+            return nullptr;
+        }
+#else
+        init_error = mysql_query(db, sql);
+#endif
+    }
+#endif
+    if (qore_check_cancel(xsink, "initializing the MySQL connection") || init_error) {
+        if (!*xsink) {
+            xsink->raiseExceptionArg("DBI:MYSQL:INIT-ERROR", qore_mysql_error_arg(db, xsink), "%s", mysql_error(db));
+        }
+        mysql_close(db);
+        return nullptr;
+    }
 
     return db;
 }
@@ -2657,6 +2807,8 @@ static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xs
     methods.registerOption(DBI_OPT_NUMBER_NUMERIC, "when set, numeric/decimal values are returned as arbitrary-precision number values; the argument is ignored; setting this option turns it on and turns off 'string-numbers' and 'optimal-numbers'");
     methods.registerOption(DBI_OPT_TIMEZONE, "set the server-side timezone, value must be a string in the format accepted by Timezone::constructor() on the client (ie either a region name or a UTC offset like \"+01:00\"), if not set the server's time zone will be assumed to be the same as the client's", stringTypeInfo);
     methods.registerOption(MYSQL_OPT_COLLATION, "set the client-side collation value for the connection", stringTypeInfo);
+    methods.registerOption(QORE_MYSQL_OPT_CONNECT_TIMEOUT, "connection timeout in seconds; 0 uses the native "
+        "client default; applies when opening or reconnecting", bigIntTypeInfo);
 
     // register database functions with DBI subsystem
     DBID_MYSQL = DBI.registerDriver("mysql", methods, mysql_caps);
@@ -2664,7 +2816,11 @@ static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xs
 
 static void qore_mysql_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink) {
     QORE_TRACE("qore_mysql_module_ns_init()");
-    // nothing to do at the moment
+#if defined(HAVE_MYSQL_REAL_CONNECT_START) && defined(_QORE_HAS_CANCELLABLE_POLL)
+    qns->addConstant("MYSQL_HAVE_CANCELLABLE_CONNECT", true);
+#else
+    qns->addConstant("MYSQL_HAVE_CANCELLABLE_CONNECT", false);
+#endif
 }
 
 static void qore_mysql_module_delete() {

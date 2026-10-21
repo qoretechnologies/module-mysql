@@ -10,14 +10,8 @@ include(CheckCXXSymbolExists)
 
 find_package(Qore 0.9 REQUIRED)
 
-# Check for C++11.
-include(CheckCXXCompilerFlag)
-CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
-if(COMPILER_SUPPORTS_CXX11)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-else()
-    message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} has no C++11 support. Please use a different C++ compiler.")
-endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_THREAD_PREFER_PTHREAD ON)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -47,6 +41,7 @@ check_cxx_symbol_exists(mysql_stmt_prepare mysql.h HAVE_MYSQL_STMT)
 check_cxx_symbol_exists(mysql_commit mysql.h HAVE_MYSQL_COMMIT)
 check_cxx_symbol_exists(mysql_set_character_set mysql.h HAVE_MYSQL_SET_CHARACTER_SET)
 check_cxx_symbol_exists(mysql_library_init mysql.h HAVE_MYSQL_LIBRARY_INIT)
+check_cxx_symbol_exists(mysql_real_connect_start mysql.h HAVE_MYSQL_REAL_CONNECT_START)
 check_cxx_symbol_exists(mysql_set_local_infile_handler mysql.h HAVE_MYSQL_SET_LOCAL_INFILE_HANDLER)
 check_cxx_source_compiles("
 #include <mysql.h>
