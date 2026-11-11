@@ -4,6 +4,26 @@
 
     @tableofcontents
 
+    @section mysql_sandbox Sandboxing
+
+    In a %Qore version that checks DBI connections against the sandbox, a connection opened by code governed by a
+    sandbox is checked against its network and filesystem policy before it is opened.  The driver reports the
+    destination that the client library connects to: a connection without a host or with the host \c localhost (in
+    lower case) goes to the UNIX socket given with the \c MYSQL_UNIX_PORT environment variable (also
+    \c MARIADB_UNIX_PORT with MariaDB Connector/C) when the driver was loaded, or the library's default socket, which
+    the filesystem policy decides; any other host by TCP to the port of the datasource or to port 3306.  The driver
+    reads no option file, which could name another destination.  A connection handler host (\c "scheme://..."), an
+    abstract UNIX socket (\c "@..."), and any connection on Windows (TCP to \c localhost, named pipes, shared
+    memory) are refused with \c NETWORK-ACCESS-DENIED.
+
+    A connection that was checked connects to the checked destination only: the socket is passed to the client
+    library explicitly, and a host name is connected to by its checked addresses in turn (the next address only if
+    the server could not be reached at the previous one), so that a name that resolves to another address later
+    (also when the driver reconnects) cannot redirect it.  The client library then knows the server by its address,
+    so a TLS certificate is verified against the address: with MariaDB Connector/C 3.4 or later, which verifies the
+    server certificate by default, a sandboxed connection to a server whose certificate names only its host name
+    (no IP address) fails (a self-signed certificate is verified with the password instead and is not affected).
+
     @section mysql_connect_timeout Connection establishment
 
     The \c connect-timeout option accepts an integer from 0 to 2147483 seconds (default 0, the native
