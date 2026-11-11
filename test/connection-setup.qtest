@@ -33,6 +33,10 @@ class ConnectionSetupTest inherits QUnit::Test {
         hash<auto> cfg = config(server.getSocketInfo().port, mode == "zero" ? 0 : (mode == "timeout" ? 1 : 5));
         Queue done();
         SandboxManager sm();
+        # the manager is there for interrupts only: it allows every destination, so the connection is not
+        # checked against a network or filesystem policy (qore#5747)
+        sm.setNetworkDefaultPolicy(True);
+        sm.setFilesystemDefaultPolicy(True);
         Program p(PO_NO_CHILD_PO_RESTRICTIONS);
         p.loadModule("mysql");
         if (mode == "interrupt") {
