@@ -313,15 +313,16 @@ static bool mysql_finish_connect_operation(MYSQL* db, int status, Resume resume,
 }
 #endif
 
-static MYSQL* mysql_connect_cancellable(MYSQL* db, Datasource* ds, unsigned int port, ExceptionSink* xsink) {
+static MYSQL* mysql_connect_cancellable(MYSQL* db, Datasource* ds, const char* host, unsigned int port,
+        const char* unix_socket, ExceptionSink* xsink) {
 #if defined(HAVE_MYSQL_REAL_CONNECT_START) && defined(_QORE_HAS_CANCELLABLE_POLL)
     if (mysql_options(db, MYSQL_OPT_NONBLOCK, nullptr)) {
         xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not enable nonblocking connection: %s", mysql_error(db));
         return nullptr;
     }
     MYSQL* result = nullptr;
-    int status = mysql_real_connect_start(&result, db, ds->getHostName(), ds->getUsername(), ds->getPassword(),
-        ds->getDBName(), port, nullptr, CLIENT_FOUND_ROWS);
+    int status = mysql_real_connect_start(&result, db, host, ds->getUsername(), ds->getPassword(),
+        ds->getDBName(), port, unix_socket, CLIENT_FOUND_ROWS);
     if (!mysql_finish_connect_operation(db, status, [&](int ready) {
             return mysql_real_connect_cont(&result, db, ready);
         }, xsink)) {
@@ -329,11 +330,183 @@ static MYSQL* mysql_connect_cancellable(MYSQL* db, Datasource* ds, unsigned int 
     }
     return result;
 #else
-    MYSQL* result = mysql_real_connect(db, ds->getHostName(), ds->getUsername(), ds->getPassword(),
-        ds->getDBName(), port, nullptr, CLIENT_FOUND_ROWS);
+    MYSQL* result = mysql_real_connect(db, host, ds->getUsername(), ds->getPassword(),
+        ds->getDBName(), port, unix_socket, CLIENT_FOUND_ROWS);
     return qore_check_cancel(xsink, "connecting to the MySQL server") ? nullptr : result;
 #endif
 }
+
+//! Returns a new client handle with the connection options of the datasource, or nullptr if an exception was raised
+static MYSQL* qore_mysql_new_handle(Datasource* ds, ExceptionSink* xsink) {
+    MYSQL* db = mysql_init(NULL);
+    if (!db) {
+        xsink->outOfMemory();
+        return nullptr;
+    }
+    const QoreHashNode* options = ds->getConnectOptions();
+    if (options) {
+        QoreValue value = options->getKeyValue(QORE_MYSQL_OPT_CONNECT_TIMEOUT);
+        if (!value.isNothing()) {
+            unsigned int timeout;
+            if (qore_mysql_connect_timeout(value, timeout, xsink)) {
+                mysql_close(db);
+                return nullptr;
+            }
+            if (mysql_options(db, MYSQL_OPT_CONNECT_TIMEOUT, &timeout)) {
+                xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not set connection timeout: %s", mysql_error(db));
+                mysql_close(db);
+                return nullptr;
+            }
+        }
+    }
+#ifdef QORE_MYSQL_HAVE_BULK_LOAD
+    unsigned int local_infile = 1;
+    if (mysql_options(db, MYSQL_OPT_LOCAL_INFILE, &local_infile)) {
+        xsink->raiseExceptionArg("DBI:MYSQL:INIT-ERROR", qore_mysql_error_arg(db, xsink),
+            "could not enable guarded LOCAL INFILE support: %s", mysql_error(db));
+        mysql_close(db);
+        return nullptr;
+    }
+#endif
+    return db;
+}
+
+#ifdef QDBI_METHOD_GET_CONNECT_TARGETS
+//! the UNIX socket that the client library connects to for a connection without a host or with \c localhost
+static std::string mysql_default_unix_socket;
+
+//! Saves the UNIX socket that the client library uses by default, as the library determined it when it was
+//! initialized
+/** The library reads the environment once, in mysql_library_init(), and does not export the result; a connection
+    checked against a sandbox passes this path explicitly, so that the checked socket is the one it connects to
+*/
+static void mysql_save_default_socket() {
+    const char* env = getenv("MYSQL_UNIX_PORT");
+#ifdef MARIADB_UNIX_ADDR
+    if (!env) {
+        env = getenv("MARIADB_UNIX_PORT");
+    }
+#endif
+    mysql_default_unix_socket = env ? env : MYSQL_UNIX_ADDR;
+}
+
+//! Returns true if the client library connects to the UNIX socket for the host
+static bool mysql_host_is_socket(const char* host) {
+    // the library compares the host with "localhost" exactly
+    return !host || !*host || !strcmp(host, "localhost");
+}
+
+//! Returns the destination that the client library connects to for a datasource, for the sandbox (qore#5747)
+/** A connection without a host or with the host \c localhost connects to the UNIX socket (\c MYSQL_UNIX_PORT or the
+    library's default), any other host by TCP to the port of the datasource or the default port; the driver reads no
+    option file, which could name another destination.
+*/
+static QoreListNode* mysql_get_connect_targets(Datasource* ds, ExceptionSink* xsink) {
+#ifdef _WIN32
+    // localhost by TCP, named pipes and shared memory
+    xsink->raiseException("NETWORK-ACCESS-DENIED", "the destinations of a MySQL connection on Windows cannot be "
+        "checked against the sandbox");
+    return nullptr;
+#endif
+    ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
+    const char* host = ds->getHostName();
+    if (mysql_host_is_socket(host)) {
+        // an abstract socket is not a file that the filesystem policy can decide
+        if (mysql_default_unix_socket[0] == '@') {
+            xsink->raiseException("NETWORK-ACCESS-DENIED", "the MySQL connection uses the abstract UNIX socket '%s', "
+                "which cannot be checked against the sandbox", mysql_default_unix_socket.c_str());
+            return nullptr;
+        }
+        h->setKeyValue("socket", new QoreStringNode(mysql_default_unix_socket), xsink);
+    } else if (strstr(host, "://")) {
+        // a connection handler plugin (MariaDB Connector/C), which chooses its own destinations
+        xsink->raiseException("NETWORK-ACCESS-DENIED", "the MySQL connection uses the connection handler '%s', whose "
+            "destinations cannot be checked against the sandbox", host);
+        return nullptr;
+    } else {
+        h->setKeyValue("host", new QoreStringNode(host), xsink);
+        h->setKeyValue("port", ds->getPort() ? ds->getPort() : MYSQL_PORT, xsink);
+    }
+    ReferenceHolder<QoreListNode> rv(new QoreListNode(autoTypeInfo), xsink);
+    rv->push(h.release(), xsink);
+    return rv.release();
+}
+
+//! Returns true if a connection error means that the server could not be reached, so that the next address is tried
+static bool mysql_unreachable(MYSQL* db) {
+    switch (mysql_errno(db)) {
+        case CR_CONNECTION_ERROR:
+        case CR_CONN_HOST_ERROR:
+            return true;
+        default:
+            return false;
+    }
+}
+
+//! Connects to the destination that was checked against the sandbox
+/** A UNIX socket is passed to the library explicitly, and a TCP host is connected to by its checked addresses in turn
+    (as the library tries the addresses of a host name), so that a name that resolves to another address after the
+    check cannot redirect the connection; the next address is tried only if the server could not be reached.
+
+    @note the library then knows the server by its address, so a TLS certificate is verified against the address
+
+    @return 0 for success (\a db is the connected handle, which can be another one than the one given), -1 if an
+    exception was raised (\a db has been closed)
+*/
+static int mysql_connect_checked(MYSQL*& db, Datasource* ds, const QoreListNode* checked, ExceptionSink* xsink) {
+    const QoreHashNode* t = checked->size() == 1 ? checked->retrieveEntry(0).get<const QoreHashNode>() : nullptr;
+    const char* host = ds->getHostName();
+    QoreValue socket = t ? t->getKeyValue("socket") : QoreValue();
+    if (!t || mysql_host_is_socket(host) != (socket.getType() == NT_STRING)) {
+        xsink->raiseException("NETWORK-ACCESS-DENIED", "the destination of the MySQL connection changed after it was "
+            "checked against the sandbox");
+        mysql_close(db);
+        db = nullptr;
+        return -1;
+    }
+    if (socket.getType() == NT_STRING) {
+        if (mysql_connect_cancellable(db, ds, "localhost", 0, socket.get<const QoreStringNode>()->c_str(), xsink)) {
+            return 0;
+        }
+    } else {
+        QoreValue av = t->getKeyValue("addresses");
+        const QoreListNode* addresses = av.getType() == NT_LIST ? av.get<const QoreListNode>() : nullptr;
+        if (!addresses || addresses->empty()) {
+            // Qore gives every checked TCP destination its addresses
+            assert(false);
+            xsink->raiseException("NETWORK-ACCESS-DENIED", "a checked destination of a MySQL connection has no "
+                "address");
+            mysql_close(db);
+            db = nullptr;
+            return -1;
+        }
+        unsigned int port = (unsigned int)t->getKeyValue("port").getAsBigInt();
+        for (size_t i = 0, e = addresses->size(); i < e; ++i) {
+            if (i) {
+                // a failed connection attempt leaves the handle unusable for another one
+                mysql_close(db);
+                db = qore_mysql_new_handle(ds, xsink);
+                if (!db) {
+                    return -1;
+                }
+            }
+            const char* addr = addresses->retrieveEntry(i).get<const QoreStringNode>()->c_str();
+            if (mysql_connect_cancellable(db, ds, addr, port, nullptr, xsink)) {
+                return 0;
+            }
+            if (*xsink || !mysql_unreachable(db)) {
+                break;
+            }
+        }
+    }
+    if (!*xsink) {
+        xsink->raiseExceptionArg("DBI:MYSQL:CONNECT-ERROR", qore_mysql_error_arg(db, xsink), "%s", mysql_error(db));
+    }
+    mysql_close(db);
+    db = nullptr;
+    return -1;
+}
+#endif
 
 MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
     printd(5, "qore_mysql_init() datasource %p for DB: %s\n", ds, ds->getDBName() ? ds->getDBName() : "unknown");
@@ -361,36 +534,10 @@ MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
         return nullptr;
     }
 
-    MYSQL* db = mysql_init(NULL);
+    MYSQL* db = qore_mysql_new_handle(ds, xsink);
     if (!db) {
-        xsink->outOfMemory();
-        return 0;
-    }
-    const QoreHashNode* options = ds->getConnectOptions();
-    if (options) {
-        QoreValue value = options->getKeyValue(QORE_MYSQL_OPT_CONNECT_TIMEOUT);
-        if (!value.isNothing()) {
-            unsigned int timeout;
-            if (qore_mysql_connect_timeout(value, timeout, xsink)) {
-                mysql_close(db);
-                return nullptr;
-            }
-            if (mysql_options(db, MYSQL_OPT_CONNECT_TIMEOUT, &timeout)) {
-                xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not set connection timeout: %s", mysql_error(db));
-                mysql_close(db);
-                return nullptr;
-            }
-        }
-    }
-#ifdef QORE_MYSQL_HAVE_BULK_LOAD
-    unsigned int local_infile = 1;
-    if (mysql_options(db, MYSQL_OPT_LOCAL_INFILE, &local_infile)) {
-        xsink->raiseExceptionArg("DBI:MYSQL:INIT-ERROR", qore_mysql_error_arg(db, xsink),
-            "could not enable guarded LOCAL INFILE support: %s", mysql_error(db));
-        mysql_close(db);
         return nullptr;
     }
-#endif
     int port = ds->getPort();
 
     if (!port && ds->getHostName()) {
@@ -400,13 +547,21 @@ MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
     printd(3, "qore_mysql_init(): user: '%s' db: '%s' (encoding=%s) host: '%s' port: %d\n",
             ds->getUsername(), ds->getDBName(), ds->getDBEncoding() ? ds->getDBEncoding() : "(none)", ds->getHostName(), port);
 
-    if (!mysql_connect_cancellable(db, ds, port, xsink)) {
+#ifdef QDBI_METHOD_GET_CONNECT_TARGETS
+    if (const QoreListNode* checked = ds->getCheckedConnectTargets()) {
+        // a connection checked against a sandbox connects to the checked destination only
+        if (mysql_connect_checked(db, ds, checked, xsink)) {
+            return nullptr;
+        }
+    } else
+#endif
+    if (!mysql_connect_cancellable(db, ds, ds->getHostName(), port, nullptr, xsink)) {
         if (!*xsink) {
             xsink->raiseExceptionArg("DBI:MYSQL:CONNECT-ERROR", qore_mysql_error_arg(db, xsink), "%s",
                 mysql_error(db));
         }
         mysql_close(db);
-        return 0;
+        return nullptr;
     }
 
     // Initialization is part of opening the connection and can block on server responses too.
@@ -2749,6 +2904,9 @@ static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xs
 #else
     mysql_server_init(0, 0, 0);
 #endif
+#ifdef QDBI_METHOD_GET_CONNECT_TARGETS
+    mysql_save_default_socket();
+#endif
 
     // populate the method list structure with the method pointers
     qore_dbi_method_list methods;
@@ -2811,6 +2969,9 @@ static void qore_mysql_module_init(QoreModuleInitContext& ctx, ExceptionSink& xs
         "client default; applies when opening or reconnecting", bigIntTypeInfo);
 
     // register database functions with DBI subsystem
+#ifdef QDBI_METHOD_GET_CONNECT_TARGETS
+    methods.add(QDBI_METHOD_GET_CONNECT_TARGETS, mysql_get_connect_targets);
+#endif
     DBID_MYSQL = DBI.registerDriver("mysql", methods, mysql_caps);
 }
 

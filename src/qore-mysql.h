@@ -31,6 +31,7 @@
 #include <qore/QoreSandboxManager.h>
 
 #include <mysql.h>
+#include <errmsg.h>
 
 #include <string>
 

@@ -1,0 +1,278 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+# SPDX-License-Identifier: MIT
+# test-platform: macos - sandbox network and filesystem policy, MySQL client TCP and UNIX socket connections
+
+%modern
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires FsUtil
+%requires Util
+%requires mysql
+%exec-class MysqlSandboxTest
+
+#! The mysql driver reports the destination of its connections to the sandbox (qore#5747)
+/** A connection without a host or with \c localhost goes to the UNIX socket (MYSQL_UNIX_PORT or the library's
+    default), any other host by TCP to the given or the default port; a connection that was checked connects to the
+    checked socket or addresses only.
+
+    No database is needed: the refused cases never connect, and the allowed ones connect to a fixture socket of the
+    test, whose accepted connection proves that the driver connected to the checked destination; the fixture then
+    closes it, and the open fails.  The sandboxes allow precisely, so that a wrong report fails the case.
+
+    Needs a Qore with the DBI sandbox check (DBI_CAP_LOCAL_ONLY); the test skips otherwise.
+*/
+class MysqlSandboxTest inherits QUnit::Test {
+    public {
+        #! the environment variables of the client library that can choose a destination; cleared in every case
+        const MyEnv = ("MYSQL_UNIX_PORT", "MARIADB_UNIX_PORT", "MYSQL_TCP_PORT");
+
+        #! the guard against a hang when the fixture waits for the driver; never an expected time
+        const FixtureTimeout = 10s;
+    }
+
+    private {
+        #! the values of MyEnv when the test started
+        hash<string, *string> saved_env;
+    }
+
+    constructor() : QUnit::Test("MysqlSandboxTest", "1.0", \ARGV) {
+        addTestCase("a denied TCP destination is refused", \testRefused());
+        addTestCase("an allowed TCP destination is connected to", \testTcp());
+        addTestCase("the port is checked", \testPort());
+        addTestCase("the default port is checked", \testDefaultPort());
+        addTestCase("a host name is connected to by its checked addresses in turn", \testHostName());
+        addTestCase("connection handler hosts are refused", \testHandlerHost());
+        addTestCase("the UNIX socket is checked and connected to", \testSocket());
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        foreach string var in (MyEnv) {
+            saved_env{var} = ENV{var};
+        }
+    }
+
+    setUp() {
+        if (!haveDbiSandboxCheck()) {
+            testSkip("this Qore does not check DBI connections against the sandbox");
+        }
+        foreach string var in (MyEnv) {
+            unsetenv(var);
+        }
+    }
+
+    tearDown() {
+        foreach hash<auto> i in (saved_env.pairIterator()) {
+            if (exists i.value) {
+                setenv(i.key, i.value);
+            } else {
+                unsetenv(i.key);
+            }
+        }
+    }
+
+    #! returns True if Qore checks DBI connections against the sandbox (qore#5747): it has DBI_CAP_LOCAL_ONLY
+    static bool haveDbiSandboxCheck() {
+        Program p(PO_NEW_STYLE);
+        try {
+            p.parse("int sub f() { return DBI_CAP_LOCAL_ONLY; }", "check");
+            return True;
+        } catch (hash<ExceptionInfo> ex) {
+            return False;
+        }
+    }
+
+    #! returns a Program governed by the sandbox with a function that opens a connection
+    static Program sandboxed(SandboxManager sm) {
+        Program p(PO_NEW_STYLE);
+        p.setSandboxManager(sm);
+        p.parse("string sub open(hash<auto> c) {
+    try {
+        Datasource ds(c);
+        ds.open();
+        ds.close();
+        return \"NONE\";
+    } catch (hash<ExceptionInfo> ex) {
+        return ex.err;
+    }
+}
+
+string sub open_desc(hash<auto> c) {
+    try {
+        Datasource ds(c);
+        ds.open();
+        ds.close();
+        return \"NONE\";
+    } catch (hash<ExceptionInfo> ex) {
+        return ex.desc;
+    }
+}", "mysql-sandbox");
+        return p;
+    }
+
+    #! a sandbox that allows by default and denies TEST-NET-3 (RFC 5737)
+    static SandboxManager denyTestNet() {
+        SandboxManager sm();
+        sm.setNetworkDefaultPolicy(True);
+        sm.setFilesystemDefaultPolicy(True);
+        sm.addNetworkDeniedIPRange("203.0.113.0/24");
+        return sm;
+    }
+
+    #! a sandbox that allows only the given port
+    static SandboxManager onlyPort(int port) {
+        SandboxManager sm();
+        sm.setNetworkDefaultPolicy(True);
+        sm.setFilesystemDefaultPolicy(True);
+        sm.addNetworkAllowedPort(port);
+        return sm;
+    }
+
+    #! connection parameters that no server accepts
+    static hash<auto> dummy(hash<auto> c = {}) {
+        return {"type": "mysql", "user": "nobody", "pass": "nothing", "db": "nothing",
+            "options": {"connect-timeout": 5}} + c;
+    }
+
+    #! opens the connection in the sandbox, which must connect to the listening fixture
+    /** @return the error of the open (the fixture closes the connection), or NOTHING if the fixture got no
+        connection
+    */
+    *string viaFixture(Socket server, SandboxManager sm, hash<auto> c) {
+        Program p = sandboxed(sm);
+        Queue done();
+        background done.push(p.callFunction("open", c));
+        *Socket peer = server.accept(FixtureTimeout);
+        if (!peer) {
+            # the open ended without connecting: report its result
+            fail(sprintf("the driver did not connect to the fixture: %y", done.get(FixtureTimeout)));
+            return;
+        }
+        peer.shutdown();
+        peer.close();
+        return done.get(FixtureTimeout);
+    }
+
+    testRefused() {
+        Program p = sandboxed(denyTestNet());
+        string desc = p.callFunction("open_desc", dummy({"host": "203.0.113.1", "port": 3306}));
+        # refused by the address check, not because the driver could not report its destination
+        assertRegex("203\\.0\\.113\\.1", desc);
+        assertNRegex("cannot report", desc);
+    }
+
+    testHostName() {
+        # LOCALHOST is not the exact name localhost, so the library connects by TCP to the addresses that it resolves
+        # to; the fixture listens on the last one, so that any before it are refused and the next one is tried
+        list<auto> addrs = getaddrinfo("LOCALHOST", NOTHING, AF_UNSPEC, 0);
+        string last = addrs.last().address;
+        Socket server();
+        server.bind(sprintf(last =~ /:/ ? "[%s]:0" : "%s:0", last), True);
+        server.listen();
+        on_exit server.close();
+        int port = server.getSocketInfo().port;
+        assertEq("DBI:MYSQL:CONNECT-ERROR", viaFixture(server, denyTestNet(), dummy({"host": "LOCALHOST",
+            "port": port})), sprintf("connected to %s after %d other address(es)", last, addrs.size() - 1));
+        if (addrs.size() < 2) {
+            testSkip("LOCALHOST resolves to one address only, so the next address is not tried");
+        }
+    }
+
+    testHandlerHost() {
+        assertEq("NETWORK-ACCESS-DENIED", sandboxed(denyTestNet()).callFunction("open",
+            dummy({"host": "replication://127.0.0.1,127.0.0.2"})));
+    }
+
+    testTcp() {
+        Socket server();
+        server.bind("127.0.0.1:0", True);
+        server.listen();
+        on_exit server.close();
+        int port = server.getSocketInfo().port;
+        assertEq("DBI:MYSQL:CONNECT-ERROR", viaFixture(server, denyTestNet(), dummy({"host": "127.0.0.1",
+            "port": port})));
+        # the address denied: refused before connecting
+        SandboxManager deny_lo = denyTestNet();
+        deny_lo.addNetworkDeniedIPRange("127.0.0.0/8");
+        assertEq("NETWORK-ACCESS-DENIED", sandboxed(deny_lo).callFunction("open", dummy({"host": "127.0.0.1",
+            "port": port})));
+    }
+
+    testPort() {
+        Socket server();
+        server.bind("127.0.0.1:0", True);
+        server.listen();
+        on_exit server.close();
+        int port = server.getSocketInfo().port;
+        hash<auto> c = dummy({"host": "127.0.0.1", "port": port});
+        assertEq("DBI:MYSQL:CONNECT-ERROR", viaFixture(server, onlyPort(port), c));
+        assertEq("NETWORK-ACCESS-DENIED", sandboxed(onlyPort(port + 1)).callFunction("open", c));
+    }
+
+    testDefaultPort() {
+        # a host without a port connects to 3306; MYSQL_TCP_PORT does not apply to a host the driver gives a port to
+        setenv("MYSQL_TCP_PORT", "3307");
+        hash<auto> c = dummy({"host": "127.0.0.1"});
+        assertEq("NETWORK-ACCESS-DENIED", sandboxed(onlyPort(3307)).callFunction("open", c));
+        assertNeq("NETWORK-ACCESS-DENIED", sandboxed(onlyPort(3306)).callFunction("open", c));
+    }
+
+    #! the program that the child process runs for testSocket()
+    const SocketChild = "%%modern
+%%requires mysql
+# the library read MYSQL_UNIX_PORT when it was initialized; a later change does not apply
+setenv(\"MYSQL_UNIX_PORT\", \"/nonexistent/mysql.sock\");
+SandboxManager sm();
+sm.setNetworkDefaultPolicy(True);
+sm.setFilesystemDefaultPolicy(True);
+Program p(PO_NEW_STYLE);
+p.setSandboxManager(sm);
+p.parse(\"string sub open(*string host) { try { Datasource ds({\\\"type\\\": \\\"mysql\\\", \\\"user\\\": \\\"nobody\\\", \\\"pass\\\": \\\"nothing\\\", \\\"db\\\": \\\"nothing\\\", \\\"host\\\": host}); ds.open(); } catch (hash<ExceptionInfo> ex) { return ex.err; } return \\\"NONE\\\"; }\", \"child\");
+printf(\"nohost=%%s\\n\", p.callFunction(\"open\"));
+printf(\"localhost=%%s\\n\", p.callFunction(\"open\", \"localhost\"));
+sm.addFilesystemDeniedPath(%s);
+printf(\"denied=%%s\\n\", p.callFunction(\"open\"));
+";
+
+    testSocket() {
+        TmpDir dir("mysql-sandbox");
+        string path = dir.path + "/mysql.sock";
+        Socket server();
+        server.bind(path);
+        server.listen();
+        on_exit server.close();
+        # the library reads MYSQL_UNIX_PORT when it is initialized, so a child process is started with it; it reaches
+        # the fixture only if the driver passes the checked socket, and changes the variable before connecting
+        string script = dir.path + "/child.q";
+        File f();
+        f.open2(script, O_CREAT | O_WRONLY | O_TRUNC);
+        f.write(sprintf(SocketChild, sprintf("%y", path)));
+        f.close();
+        string module_dir = dirname(get_module_hash().mysql.filename);
+        string cmd = sprintf("MYSQL_UNIX_PORT=%s QORE_MODULE_DIR=%s%s %s %s 2>&1", quote(path), quote(module_dir),
+            ENV.QORE_MODULE_DIR ? ":" + quote(ENV.QORE_MODULE_DIR) : "", quote(QORE_ARGV[0]), quote(script));
+        Queue done();
+        background done.push(backquote(cmd));
+        # one connection without a host, one with localhost; the denied socket is refused before connecting
+        foreach string what in (("no host", "localhost")) {
+            *Socket peer = server.accept(FixtureTimeout);
+            if (!peer) {
+                fail(sprintf("the driver did not connect to the fixture (%s): %s", what, done.get(FixtureTimeout)));
+                return;
+            }
+            peer.shutdown();
+            peer.close();
+        }
+        string out = done.get(FixtureTimeout);
+        assertRegex("nohost=DBI:MYSQL:CONNECT-ERROR", out, out);
+        assertRegex("localhost=DBI:MYSQL:CONNECT-ERROR", out, out);
+        assertRegex("denied=FILESYSTEM-ACCESS-DENIED", out, out);
+    }
+
+    #! returns a shell-quoted string
+    static string quote(string str) {
+        return "'" + replace(str, "'", "'\\''") + "'";
+    }
+}
