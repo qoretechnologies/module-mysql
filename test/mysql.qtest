@@ -23,6 +23,9 @@ class MysqlTest inherits QUnit::Test {
 
         string connstr;
 
+        # why the test cases are skipped, if they are: no server is configured or reachable
+        *string skip_reason;
+
         const object_map = (
             "mysql": (
                 "tables": mysql_tables,
@@ -90,20 +93,7 @@ class MysqlTest inherits QUnit::Test {
     }
 
     constructor() : Test("MysqlTest", "1.0", \ARGV, MyOpts) {
-        *string cs = ENV.QORE_DB_CONNSTR_MYSQL ?? shift ARGV;
-        if (!cs) {
-            stderr.printf("QORE_DB_CONNSTR_MYSQL environment variable not set; cannot run tests\n");
-            return;
-        }
-        connstr = cs;
-
-        Datasource db(connstr);
-        if (db.getDriverName() != "mysql") {
-            stderr.printf("DB is %y; can only test \"mysql\" with this script\n", db.getDriverName());
-            return;
-        }
-
-        createDataModel(db);
+        connstr = ENV.QORE_DB_CONNSTR_MYSQL ?? shift ARGV ?? "";
 
         addTestCase("datetime test", \dateTimeTest());
         addTestCase("collation test", \collationTest());
@@ -194,7 +184,37 @@ class MysqlTest inherits QUnit::Test {
         db.commit();
     }
 
+    #! creates the test data, or sets the reason to skip the test cases when no server is configured or reachable
+    globalSetUp() {
+        if (!connstr) {
+            skip_reason = "no MySQL connection; set QORE_DB_CONNSTR_MYSQL";
+            return;
+        }
+        Datasource db;
+        try {
+            db = new Datasource(connstr);
+            if (db.getDriverName() != "mysql") {
+                skip_reason = sprintf("connection is for the %y driver, not mysql", db.getDriverName());
+                return;
+            }
+            db.open();
+        } catch (hash<ExceptionInfo> ex) {
+            skip_reason = "no MySQL connection: " + ex.err + ": " + ex.desc;
+            return;
+        }
+        createDataModel(db);
+    }
+
+    setUp() {
+        if (skip_reason) {
+            testSkip(skip_reason);
+        }
+    }
+
     globalTearDown() {
+        if (skip_reason) {
+            return;
+        }
         if (m_options.keep) {
             if (m_options.verbose)
                 printf("not deleting test DB data\n");

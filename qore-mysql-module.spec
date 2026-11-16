@@ -88,7 +88,7 @@ chmod 755 %{buildroot}%{_libdir}/qore-modules/mysql-api-*.qmod
 %if %{with docs}
 install -d %{buildroot}%{_docdir}/%{name}-doc/examples
 cp -a build/docs/mysql/html %{buildroot}%{_docdir}/%{name}-doc/
-install -m644 test/db-test.q test/sql-stmt.q test/mysql-native-bulk-load.qtest \
+install -m644 test/mysql.qtest test/sql-stmt.q test/mysql-native-bulk-load.qtest \
   %{buildroot}%{_docdir}/%{name}-doc/examples/
 hardlink -t -O %{buildroot}%{_docdir}/%{name}-doc
 %endif

@@ -14,7 +14,7 @@ EXTRA_DIST = COPYING.LGPL COPYING.GPL ChangeLog AUTHORS README \
 	test/mariadb-async-context.py \
 	test/mariadb-infile-error.c \
 	test/connection-setup.qtest \
-	test/db-test.q \
+	test/mysql.qtest \
 	test/mysql-native-bulk-load.qtest \
 	test/sql-stmt.q \
 	qore-mysql-module.spec
