@@ -113,6 +113,7 @@ class MysqlTest inherits QUnit::Test {
         addTestCase("binary data test", \binaryDataTest());
         addTestCase("number options test", \numberOptionsTest());
         addTestCase("timezone test", \timezoneTest());
+        addTestCase("fetch error test", \fetchErrorTest());
 
         set_return_value(main());
     }
@@ -884,6 +885,65 @@ class MysqlTest inherits QUnit::Test {
     }
 
     # Test timezone handling
+    #! an error that the server raises while the rows are fetched is raised (qore#6497)
+    /** The scalar subquery returns two rows for one row of the select only: the server sends the rows before it, then
+        the error, which was lost: the select returned the rows before it as its whole result
+    */
+    fetchErrorTest() {
+        Datasource db(connstr);
+        on_exit db.rollback();
+
+        # the error is raised for the third of four rows
+        string sql = "select t.n, (select 1 union all select 2 from dual where t.n = 3) as x from "
+            "(select 1 as n union all select 2 union all select 3 union all select 4) t order by t.n";
+        string err = "DBI:MYSQL:FETCH-ERROR";
+        string desc = "Subquery returns more than 1 row";
+        assertThrows(err, desc, \db.select(), sql);
+        assertThrows(err, desc, \db.selectRows(), sql);
+        assertThrows(err, desc, \db.selectColumnar(), sql);
+        # selectRow() reads a second row to check that there is none: the error of the second row is raised
+        assertThrows(err, desc, \db.selectRow(), "select t.n, (select 1 union all select 2 from dual where t.n = 2) "
+            "as x from (select 1 as n union all select 2) t order by t.n");
+
+        # a statement raises the error in the call that reads the row
+        {
+            SQLStatement stmt(db);
+            on_exit stmt.close();
+            stmt.prepare(sql);
+            list<auto> ns;
+            try {
+                while (stmt.next()) {
+                    ns += stmt.fetchRow().n.toInt();
+                }
+                fail("no error from SQLStatement::next()");
+            } catch (hash<ExceptionInfo> ex) {
+                assertEq(err, ex.err, "SQLStatement::next()");
+                assertRegex(desc, ex.desc, "SQLStatement::next()");
+            }
+            assertEq((1, 2), ns, "the rows before the error");
+        }
+        {
+            SQLStatement stmt(db);
+            on_exit stmt.close();
+            stmt.prepare(sql);
+            assertThrows(err, desc, \stmt.fetchRows(), -1);
+        }
+        {
+            SQLStatement stmt(db);
+            on_exit stmt.close();
+            stmt.prepare(sql);
+            assertThrows(err, desc, \stmt.fetchColumns(), -1);
+        }
+
+        # MySQL ends a recursive query with an error after cte_max_recursion_depth (1000 by default) iterations;
+        # MariaDB ends it without an error
+        int version = db.getServerVersion();
+        if (version >= 80000 && version < 100000) {
+            assertThrows(err, "Recursive query aborted after 1001 iterations", \db.selectRows(),
+                "with recursive r (n) as (select 0 union all select n + 1 from r where n < 2000) select n from r");
+        }
+    }
+
     timezoneTest() {
         Datasource db(connstr);
         db.open();
