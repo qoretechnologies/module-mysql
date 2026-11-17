@@ -1672,13 +1672,19 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
                 }
 
                 if (rows > 1) {
-                    QoreListNode* l = new QoreListNode(autoTypeInfo);
-                    while (!mysql_stmt_fetch(tmp_stmt))
+                    ReferenceHolder<QoreListNode> l(new QoreListNode(autoTypeInfo), xsink);
+                    int frc;
+                    while ((frc = qore_mysql_stmt_fetch(tmp_stmt, mydata->db, xsink)) > 0)
                         l->push(tmpres.getBoundColumnValue(0, true), xsink);
-                    v = l;
+                    if (frc < 0) {
+                        return nullptr;
+                    }
+                    v = l.release();
                 }
                 else {
-                    mysql_stmt_fetch(tmp_stmt);
+                    if (qore_mysql_stmt_fetch(tmp_stmt, mydata->db, xsink) < 0) {
+                        return nullptr;
+                    }
                     v = tmpres.getBoundColumnValue(0, true);
                 }
             }
@@ -1728,7 +1734,14 @@ int QoreMysqlBindGroup::execIntern(ExceptionSink* xsink) {
 int QoreMysqlBindGroup::getDataRows(QoreListNode& l, ExceptionSink* xsink, int max) {
     // row count
     int c = 0;
-    while ((max < 0 || c < max) && !mysql_stmt_fetch(stmt)) {
+    while (max < 0 || c < max) {
+        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        if (rc < 0) {
+            return -1;
+        }
+        if (!rc) {
+            break;
+        }
         // Check for interrupt periodically during fetch
         if ((c % 100) == 0 && qore_check_cancel(xsink)) {
             return -1;
@@ -1749,7 +1762,14 @@ int QoreMysqlBindGroup::getDataColumns(QoreHashNode& h, ExceptionSink* xsink, in
 
     // row count
     int c = 0;
-    while ((max < 0 || c < max) && !mysql_stmt_fetch(stmt)) {
+    while (max < 0 || c < max) {
+        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        if (rc < 0) {
+            return -1;
+        }
+        if (!rc) {
+            break;
+        }
         // Check for interrupt periodically during fetch
         if ((c % 100) == 0 && qore_check_cancel(xsink)) {
             return -1;
@@ -1785,7 +1805,14 @@ QoreColumnarResult* QoreMysqlBindGroup::getDataColumnar(int max, ExceptionSink* 
     }
 
     int c = 0;
-    while ((max < 0 || c < max) && !mysql_stmt_fetch(stmt)) {
+    while (max < 0 || c < max) {
+        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        if (rc < 0) {
+            return nullptr;
+        }
+        if (!rc) {
+            break;
+        }
         if ((c % 100) == 0 && qore_check_cancel(xsink)) {
             return nullptr;
         }
@@ -1978,25 +2005,23 @@ QoreHashNode* QoreMysqlBindGroup::selectRow(ExceptionSink* xsink) {
         QoreString tstr;
         const QoreEncoding* enc = ds->getQoreEncoding();
 
-        int rc = mysql_stmt_fetch(stmt);
-        if (rc == 1) {
-            const char* errstr = mysql_stmt_error(stmt);
-            if (!errstr) {
-                errstr = "unknown error occurred fetching results";
-            }
-            xsink->raiseExceptionArg("DBI-SELECT-ROW-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-                "selectRow() failed: %s", errstr);
+        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        if (rc < 0) {
             return nullptr;
         }
         //printd(5, "QoreMysqlBindGroup::selectRow() this: %p fetch: %d\n", this, rc);
-        if (!rc) {
+        if (rc) {
             ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
 
             for (int i = 0; i < myres.getNumFields(); i++)
                 assign_column_value(tstr, enc, myres.getFieldName(i), **h, myres.getBoundColumnValue(i, true));
 
             // see if there is a second row
-            if (!mysql_stmt_fetch(stmt)) {
+            rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+            if (rc < 0) {
+                return nullptr;
+            }
+            if (rc) {
                 xsink->raiseException("DBI-SELECT-ROW-ERROR", "SQL passed to selectRow() returned more than 1 row");
                 return nullptr;
             }
@@ -2334,9 +2359,9 @@ QoreHashNode* QoreMysqlBindGroup::describe(ExceptionSink *xsink) {
    return h.release();
 }
 
-bool QoreMysqlPreparedStatement::next() {
+bool QoreMysqlPreparedStatement::next(ExceptionSink* xsink) {
    assert(stmt);
-   return !mysql_stmt_fetch(stmt);
+   return qore_mysql_stmt_fetch(stmt, mydata->db, xsink) > 0;
 }
 
 static int mysql_stmt_api_prepare(SQLStatement* stmt, const QoreString& str, const QoreListNode* args, ExceptionSink* xsink) {
@@ -2461,7 +2486,7 @@ static bool mysql_stmt_api_next(SQLStatement* stmt, ExceptionSink* xsink) {
    QoreMysqlPreparedStatement* bg = (QoreMysqlPreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
-   return bg->next();
+   return bg->next(xsink);
 }
 
 static int mysql_stmt_api_close(SQLStatement* stmt, ExceptionSink* xsink) {

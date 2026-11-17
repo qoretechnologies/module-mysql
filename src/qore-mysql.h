@@ -302,6 +302,40 @@ static inline QoreHashNode* qore_mysql_stmt_error_arg(MYSQL_STMT* stmt, Exceptio
         mysql_stmt_error(stmt), xsink);
 }
 
+//! fetches the next row of a statement's result set (qore#6497)
+/** An error that the server reports while the rows are read, such as an error raised by a recursive query that
+    reaches its recursion limit, is raised as an exception, so that a select does not return the rows read before it
+    as its whole result.  The error is read from the statement and, if the statement reports none, from the
+    connection.
+
+    @param stmt the statement whose result set is read
+    @param db the connection of the statement
+    @param xsink the exception sink for the error
+
+    @return 1 if a row was fetched, 0 if there are no more rows, -1 if an error was raised
+*/
+static inline int qore_mysql_stmt_fetch(MYSQL_STMT* stmt, MYSQL* db, ExceptionSink* xsink) {
+    int rc = mysql_stmt_fetch(stmt);
+    if (!rc) {
+        return 1;
+    }
+    if (rc != 1) {
+        // MYSQL_NO_DATA, or MYSQL_DATA_TRUNCATED, which ended the rows before as well
+        return 0;
+    }
+    if (mysql_stmt_errno(stmt)) {
+        xsink->raiseExceptionArg("DBI:MYSQL:FETCH-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
+            "error fetching a row: %s", mysql_stmt_error(stmt));
+    } else if (db && mysql_errno(db)) {
+        xsink->raiseExceptionArg("DBI:MYSQL:FETCH-ERROR", qore_mysql_error_arg(db, xsink),
+            "error fetching a row: %s", mysql_error(db));
+    } else {
+        xsink->raiseException("DBI:MYSQL:FETCH-ERROR", "error fetching a row; the server reported no error "
+            "message");
+    }
+    return -1;
+}
+
 static inline bool wasInTransaction(Datasource *ds) {
 #ifdef _QORE_HAS_DATASOURCE_ACTIVETRANSACTION
    return ds->activeTransaction();
@@ -664,7 +698,7 @@ public:
 #ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
     DLLLOCAL QoreColumnarResult* fetchColumnar(int rows, ExceptionSink* xsink);
 #endif
-    DLLLOCAL bool next();
+    DLLLOCAL bool next(ExceptionSink* xsink);
 };
 
 #endif // _QORE_MYSQL_H

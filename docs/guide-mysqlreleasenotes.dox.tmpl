@@ -13,6 +13,11 @@
       distribution; ARM64 installations require the corrected client library described in
       \c patches/README.rst
 
+    - fixed an error that the server raises while the rows of a select are fetched, such as an error of a scalar
+      subquery that returns more than one row or of a recursive query that reaches its recursion limit, being lost:
+      the select returned the rows fetched before the error as its whole result, and \c selectRow() raised an error
+      with an empty message or returned the first row; it is raised as \c DBI:MYSQL:FETCH-ERROR
+      (<a href="https://github.com/qoretechnologies/qore/issues/6497">qore#6497</a>)
     - fixed \c SQLStatement::describe() running a statement that was not run yet and leaving its result set unread on
       the connection, so that the next command on the connection, such as a rollback, failed with "Commands out of
       sync"; the result columns of a prepared statement are now described from its metadata without running it
