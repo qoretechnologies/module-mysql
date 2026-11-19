@@ -36,37 +36,26 @@
       exception, so that an error message containing format characters was rendered from unrelated
       arguments
     - added opt-in callback-driven native bulk loading with \c DBI_CAP_HAS_BULK_LOAD
-    - added transactional multi-block cleanup with an internal savepoint, strict warning handling,
-      exact callback-payload stream accounting, and cooperative cancellation
-    - added dynamic fallback when server \c local_infile is disabled, the table engine is not
-      transactional, or identifiers are not eligible
     - denied arbitrary client-side file reads from raw \c LOAD \c DATA \c LOCAL \c INFILE SQL
 
+    - Columnar selects and fetches return dense buffers for compatible numeric columns. See @ref mysqlcapabilitiesguide.
+    - Statement binding reports driver errors when result metadata or placeholders cannot be bound.
+
     @section mysql2_1 mysql Driver Version 2.1
-    <b>New Features and Bug Fixes</b>
     - updated build to use the latest %Qore APIs
-    - fixed error message in \c mysql_stmt_api_bind_placeholders() that incorrectly referenced "pgsql" driver
-    - fixed missing error handling in \c MyResult::bind() for \c mysql_stmt_bind_result() failures
-    - fixed debug printf format string mismatch in \c QoreMysqlBindGroup::add()
-    - updated documentation with expanded type mappings and fixed typos
-    - added comprehensive negative test cases for better test coverage
-    - added columnar DBI result support with \c Datasource::selectColumnar() and
-      \c SQLStatement::fetchColumnar() when built against %Qore with columnar DBI APIs
-    - optimized columnar DBI results to return dense buffers for integer, floating-point,
-      and safe \c DECIMAL(p,s) / \c NUMERIC(p,s) columns
 
     @section mysql2021 mysql Driver Version 2.0.2.1
     <b>New Features and Bug Fixes</b>
     - fixed bugs selecting date/time values with sub-second precision
-      (<a href="https://github.com/qorelanguage/qore/issues/3949">issue 3949</a>)
+      (<a href="https://github.com/qoretechnologies/qore/issues/3949">issue 3949</a>)
     - implemented the \c "collation" option to allow the client-side per-connection collation value to be set
-      (<a href="https://github.com/qorelanguage/qore/issues/3753">issue 3753</a>)
+      (<a href="https://github.com/qoretechnologies/qore/issues/3753">issue 3753</a>)
     - updated SQLStatement::fetchColumns() to return an empty hash when no data is available
-      (<a href="https://github.com/qorelanguage/qore/issues/1241">issue 1241</a>)
+      (<a href="https://github.com/qoretechnologies/qore/issues/1241">issue 1241</a>)
     - fixed a bug where \c DBI-SELECT-ROW-ERROR exceptions were being raised as \c MYSQL-SELECT-ROW-ERROR exceptions
-      (<a href="https://github.com/qorelanguage/qore/issues/2542">issue 2542</a>)
+      (<a href="https://github.com/qoretechnologies/qore/issues/2542">issue 2542</a>)
     - fixed selectRow() to properly report errors in fetching data
-      (<a href="https://github.com/qorelanguage/qore/issues/3746">issue 3746</a>)
+      (<a href="https://github.com/qoretechnologies/qore/issues/3746">issue 3746</a>)
 
     @section mysql202 mysql Driver Version 2.0.2
     - fixed formatting bugs in invalid value specification error messages
@@ -74,8 +63,8 @@
     - placeholders and quotes in SQL comments are ignored
     - fixed time column retrieval; the date component is now set to 1970-01-01
     - fixed \c binary and \c varbinary column handling
-    - fixed the \c "optimal-numbers" option with decimal values with decimal points (<a href="https://github.com/qorelanguage/qore/issues/542">issue 542</a>)
-    - fixed returning result sets with duplicate column names (<a href="https://github.com/qorelanguage/qore/issues/832">issue 832</a>)
+    - fixed the \c "optimal-numbers" option with decimal values with decimal points (<a href="https://github.com/qoretechnologies/qore/issues/542">issue 542</a>)
+    - fixed returning result sets with duplicate column names (<a href="https://github.com/qoretechnologies/qore/issues/832">issue 832</a>)
 
     @section mysql201 mysql Driver Version 2.0.1
 
