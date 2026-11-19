@@ -69,6 +69,8 @@ private:
       long unsigned int mlen;
       //! true if a value of the unsigned integer column did not fit an int64 (issue #57)
       bool unsigned_overflow;
+      //! set by mysql_stmt_fetch() when the value of the column does not fit its buffer (issue #59)
+      my_bool merror;
    } *bi;
    QoreMysqlConnection* conn;
    const QoreEncoding* enc;
@@ -148,6 +150,10 @@ public:
       }
       return false;
    }
+
+   //! reads again each string or binary value of the current row that did not fit its buffer, into a buffer of its
+   //! length, and binds the larger buffers for the next rows; returns -1 if another value was truncated (issue #59)
+   DLLLOCAL int refetchTruncated(MYSQL_STMT* stmt, ExceptionSink* xsink);
 
    //! returns true if a value of the column read so far did not fit an int64 (issue #57)
    DLLLOCAL bool hasUnsignedOverflow(int i) const {
@@ -333,7 +339,8 @@ static inline QoreHashNode* qore_mysql_stmt_error_arg(MYSQL_STMT* stmt, Exceptio
 
     @return 1 if a row was fetched, 0 if there are no more rows, -1 if an error was raised
 */
-static inline int qore_mysql_stmt_fetch(MYSQL_STMT* stmt, MYSQL* db, ExceptionSink* xsink) {
+static inline int qore_mysql_stmt_fetch(MYSQL_STMT* stmt, MYSQL* db, ExceptionSink* xsink,
+        MyResult* res = nullptr) {
     int rc = mysql_stmt_fetch(stmt);
     if (!rc) {
         return 1;
@@ -342,6 +349,15 @@ static inline int qore_mysql_stmt_fetch(MYSQL_STMT* stmt, MYSQL* db, ExceptionSi
         return 0;
     }
     if (rc == MYSQL_DATA_TRUNCATED) {
+        // a string or binary value longer than its buffer is read again whole (issue #59)
+        if (res) {
+            if (!res->refetchTruncated(stmt, xsink)) {
+                return 1;
+            }
+            if (*xsink) {
+                return -1;
+            }
+        }
         // a value of the row does not fit the buffer that it is fetched into: the row and the rows after it would be
         // lost without an error (issue #57)
         xsink->raiseException("DBI:MYSQL:FETCH-ERROR", "a value of a row of the result does not fit the type that "

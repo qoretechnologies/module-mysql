@@ -1280,10 +1280,59 @@ int MyResult::bind(MYSQL_STMT *stmt) {
         bindbuf[i].is_null = &bi[i].mnull;
         bi[i].mlen = 0;
         bindbuf[i].length = &bi[i].mlen;
+        bi[i].merror = 0;
+        bindbuf[i].error = &bi[i].merror;
     }
 
     if (mysql_stmt_bind_result(stmt, bindbuf)) {
         // return error code; caller should check mysql_stmt_error() for details
+        return -1;
+    }
+    return 0;
+}
+
+// a string or binary value longer than the buffer that the column was bound with (ex: MySQL 8 gives a select-list
+// parameter a length of 64 KB) did not fit it: it is read again into a buffer of its length, and the larger buffer is
+// bound for the next rows (issue #59)
+int MyResult::refetchTruncated(MYSQL_STMT* stmt, ExceptionSink* xsink) {
+    // another value that does not fit its type: an error (checked first, so that nothing is changed then)
+    for (int i = 0; i < num_fields; ++i) {
+        if (bi[i].merror && bindbuf[i].buffer_type != MYSQL_TYPE_STRING
+                && bindbuf[i].buffer_type != MYSQL_TYPE_BLOB) {
+            return -1;
+        }
+    }
+    // the buffers are bound again once the values are read (binding them before would reset the fetch of the
+    // row); after a buffer was reallocated, every exit binds them, so that the library never keeps a freed buffer
+    bool rebind = false;
+    auto bind = [&]() -> int {
+        return rebind && mysql_stmt_bind_result(stmt, bindbuf) ? -1 : 0;
+    };
+    for (int i = 0; i < num_fields; ++i) {
+        if (!bi[i].merror) {
+            continue;
+        }
+        unsigned long len = bi[i].mlen;
+        // a string is terminated after its length
+        unsigned long size = len + 1;
+        void* nb = realloc(bindbuf[i].buffer, size);
+        if (!nb) {
+            bind();
+            xsink->raiseException("DBI:MYSQL:FETCH-ERROR", "cannot allocate %lu bytes for the value of column %d of "
+                "the row", size, i);
+            return -1;
+        }
+        bindbuf[i].buffer = nb;
+        bindbuf[i].buffer_length = size;
+        rebind = true;
+        if (mysql_stmt_fetch_column(stmt, &bindbuf[i], i, 0)) {
+            bind();
+            return -1;
+        }
+        bi[i].mlen = len;
+        bi[i].merror = 0;
+    }
+    if (bind()) {
         return -1;
     }
     return 0;
@@ -1701,7 +1750,7 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
                 if (rows > 1) {
                     ReferenceHolder<QoreListNode> l(new QoreListNode(autoTypeInfo), xsink);
                     int frc;
-                    while ((frc = qore_mysql_stmt_fetch(tmp_stmt, mydata->db, xsink)) > 0)
+                    while ((frc = qore_mysql_stmt_fetch(tmp_stmt, mydata->db, xsink, &tmpres)) > 0)
                         l->push(tmpres.getBoundColumnValue(0, true), xsink);
                     if (frc < 0) {
                         return nullptr;
@@ -1709,7 +1758,7 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
                     v = l.release();
                 }
                 else {
-                    if (qore_mysql_stmt_fetch(tmp_stmt, mydata->db, xsink) < 0) {
+                    if (qore_mysql_stmt_fetch(tmp_stmt, mydata->db, xsink, &tmpres) < 0) {
                         return nullptr;
                     }
                     v = tmpres.getBoundColumnValue(0, true);
@@ -1762,7 +1811,7 @@ int QoreMysqlBindGroup::getDataRows(QoreListNode& l, ExceptionSink* xsink, int m
     // row count
     int c = 0;
     while (max < 0 || c < max) {
-        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink, &myres);
         if (rc < 0) {
             return -1;
         }
@@ -1790,7 +1839,7 @@ int QoreMysqlBindGroup::getDataColumns(QoreHashNode& h, ExceptionSink* xsink, in
     // row count
     int c = 0;
     while (max < 0 || c < max) {
-        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink, &myres);
         if (rc < 0) {
             return -1;
         }
@@ -1856,7 +1905,7 @@ QoreColumnarResult* QoreMysqlBindGroup::getDataColumnar(int max, ExceptionSink* 
 
     int c = 0;
     while (max < 0 || c < max) {
-        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink, &myres);
         if (rc < 0) {
             return nullptr;
         }
@@ -2085,7 +2134,7 @@ QoreHashNode* QoreMysqlBindGroup::selectRow(ExceptionSink* xsink) {
         QoreString tstr;
         const QoreEncoding* enc = ds->getQoreEncoding();
 
-        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink, &myres);
         if (rc < 0) {
             return nullptr;
         }
@@ -2097,7 +2146,7 @@ QoreHashNode* QoreMysqlBindGroup::selectRow(ExceptionSink* xsink) {
                 assign_column_value(tstr, enc, myres.getFieldName(i), **h, myres.getBoundColumnValue(i, true));
 
             // see if there is a second row
-            rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+            rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink, &myres);
             if (rc < 0) {
                 return nullptr;
             }
@@ -2441,7 +2490,7 @@ QoreHashNode* QoreMysqlBindGroup::describe(ExceptionSink *xsink) {
 
 bool QoreMysqlPreparedStatement::next(ExceptionSink* xsink) {
    assert(stmt);
-   return qore_mysql_stmt_fetch(stmt, mydata->db, xsink) > 0;
+   return qore_mysql_stmt_fetch(stmt, mydata->db, xsink, &myres) > 0;
 }
 
 static int mysql_stmt_api_prepare(SQLStatement* stmt, const QoreString& str, const QoreListNode* args, ExceptionSink* xsink) {

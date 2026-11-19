@@ -23,6 +23,9 @@
       columnar result describes the column as \c DECIMAL(20,0)), and a value that does not fit the type that it is
       fetched as raises
       \c DBI:MYSQL:FETCH-ERROR (<a href="https://github.com/qoretechnologies/module-mysql/issues/57">issue 57</a>)
+    - fixed a string or binary value longer than the buffer of its column, such as a select-list parameter longer than
+      64 KB with MySQL 8, being lost with the rows after it: it is read again into a buffer of its length
+      (<a href="https://github.com/qoretechnologies/module-mysql/issues/59">issue 59</a>)
     - fixed \c SQLStatement::describe() running a statement that was not run yet and leaving its result set unread on
       the connection, so that the next command on the connection, such as a rollback, failed with "Commands out of
       sync"; the result columns of a prepared statement are now described from its metadata without running it
