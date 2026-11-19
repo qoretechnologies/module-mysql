@@ -34,6 +34,7 @@
 #include <errmsg.h>
 
 #include <string>
+#include <limits>
 
 #if defined(QDBI_METHOD_BULK_LOAD_BEGIN) && defined(HAVE_MYSQL_SET_LOCAL_INFILE_HANDLER) \
         && defined(HAVE_MYSQL_OPT_LOCAL_INFILE) && defined(HAVE_MYSQL_COMMIT)
@@ -66,6 +67,8 @@ private:
    struct bindInfo {
       my_bool mnull;
       long unsigned int mlen;
+      //! true if a value of the unsigned integer column did not fit an int64 (issue #57)
+      bool unsigned_overflow;
    } *bi;
    QoreMysqlConnection* conn;
    const QoreEncoding* enc;
@@ -133,6 +136,22 @@ public:
 
    DLLLOCAL int64 getBoundInt64Value(int i) const {
       return *static_cast<int64*>(bindbuf[i].buffer);
+   }
+
+   //! returns true if the bound value of an unsigned integer column is too large for an int64, and records it for
+   //! hasUnsignedOverflow() (issue #57)
+   DLLLOCAL bool isBoundUnsignedOverInt64(int i) {
+      if (bindbuf[i].is_unsigned
+            && *static_cast<uint64_t*>(bindbuf[i].buffer) > static_cast<uint64_t>(std::numeric_limits<int64>::max())) {
+         bi[i].unsigned_overflow = true;
+         return true;
+      }
+      return false;
+   }
+
+   //! returns true if a value of the column read so far did not fit an int64 (issue #57)
+   DLLLOCAL bool hasUnsignedOverflow(int i) const {
+      return bi && bi[i].unsigned_overflow;
    }
 
    DLLLOCAL double getBoundDoubleValue(int i) const {
@@ -319,9 +338,15 @@ static inline int qore_mysql_stmt_fetch(MYSQL_STMT* stmt, MYSQL* db, ExceptionSi
     if (!rc) {
         return 1;
     }
-    if (rc != 1) {
-        // MYSQL_NO_DATA, or MYSQL_DATA_TRUNCATED, which ended the rows before as well
+    if (rc == MYSQL_NO_DATA) {
         return 0;
+    }
+    if (rc == MYSQL_DATA_TRUNCATED) {
+        // a value of the row does not fit the buffer that it is fetched into: the row and the rows after it would be
+        // lost without an error (issue #57)
+        xsink->raiseException("DBI:MYSQL:FETCH-ERROR", "a value of a row of the result does not fit the type that "
+            "it is fetched as (data truncated)");
+        return -1;
     }
     if (mysql_stmt_errno(stmt)) {
         xsink->raiseExceptionArg("DBI:MYSQL:FETCH-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
@@ -604,6 +629,8 @@ protected:
 
     DLLLOCAL int getDataRows(QoreListNode& l, ExceptionSink* xsink, int max = -1);
     DLLLOCAL int getDataColumns(QoreHashNode& h, ExceptionSink* xsink, int max = -1, bool cols = false);
+    //! describes an unsigned integer column with a value that an int cannot hold as a DECIMAL(20,0) number (issue #57)
+    DLLLOCAL int describeUnsignedOverflow(QoreHashNode& desc, ExceptionSink* xsink);
 #if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
     DLLLOCAL QoreColumnarResult* getDataColumnar(int max, ExceptionSink* xsink);
 #endif
