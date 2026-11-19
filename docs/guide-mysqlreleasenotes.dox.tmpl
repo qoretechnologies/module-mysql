@@ -18,6 +18,11 @@
       the select returned the rows fetched before the error as its whole result, and \c selectRow() raised an error
       with an empty message or returned the first row; it is raised as \c DBI:MYSQL:FETCH-ERROR
       (<a href="https://github.com/qoretechnologies/qore/issues/6497">qore#6497</a>)
+    - fixed the rows of a result whose \c BIGINT \c UNSIGNED value is 2^63 or more being lost: the rows of the result
+      ended at the first such value without an error; such a value is now returned as a \c number (and a typed or
+      columnar result describes the column as \c DECIMAL(20,0)), and a value that does not fit the type that it is
+      fetched as raises
+      \c DBI:MYSQL:FETCH-ERROR (<a href="https://github.com/qoretechnologies/module-mysql/issues/57">issue 57</a>)
     - fixed \c SQLStatement::describe() running a statement that was not run yet and leaving its result set unread on
       the connection, so that the next command on the connection, such as a rollback, failed with "Commands out of
       sync"; the result columns of a prepared statement are now described from its metadata without running it

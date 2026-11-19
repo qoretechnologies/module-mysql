@@ -54,6 +54,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <poll.h>
+#include <cinttypes>
+#include <limits>
 
 typedef std::vector<std::string> strvec_t;
 
@@ -960,6 +962,14 @@ public:
 
         switch (kind) {
             case MysqlColumnarKind::Int64:
+                // an unsigned value that an int64 cannot hold: the column becomes a list, which holds it as a number
+                // (issue #57)
+                if (result.isBoundUnsignedOverInt64(index)) {
+                    if (fallbackToList(xsink)) {
+                        return -1;
+                    }
+                    return appendList(xsink);
+                }
                 storage->int_values.push_back(result.getBoundInt64Value(index));
                 appendValid();
                 return 0;
@@ -1070,7 +1080,7 @@ private:
     }
 
     int fallbackToList(ExceptionSink* xsink) {
-        assert(kind == MysqlColumnarKind::NumberOptimalInt64);
+        assert(kind == MysqlColumnarKind::NumberOptimalInt64 || kind == MysqlColumnarKind::Int64);
         assert(storage);
 
         list = new QoreListNode(autoTypeInfo);
@@ -1212,6 +1222,7 @@ int MyResult::bind(MYSQL_STMT *stmt) {
     memset(bindbuf, 0, sizeof(MYSQL_BIND) * num_fields);
 
     for (int i = 0; i < num_fields; i++) {
+        bi[i].unsigned_overflow = false;
         // setup bind structure
         //printd(5, "%d type=%d (%d %d %d)\n", field[i].type, FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_BLOB);
         switch (field[i].type) {
@@ -1224,6 +1235,9 @@ int MyResult::bind(MYSQL_STMT *stmt) {
             case FIELD_TYPE_YEAR:
                 bindbuf[i].buffer_type = MYSQL_TYPE_LONGLONG;
                 bindbuf[i].buffer = malloc(sizeof(int64));
+                // an unsigned column is fetched as unsigned: a BIGINT UNSIGNED value of 2^63 or more does not fit
+                // a signed buffer, and the truncation ended the rows of the result (issue #57)
+                bindbuf[i].is_unsigned = (field[i].flags & UNSIGNED_FLAG) ? 1 : 0;
                 break;
 
                 // for floating point values
@@ -1282,8 +1296,21 @@ QoreValue MyResult::getBoundColumnValue(int i, bool destructive) {
 
     if (bi[i].mnull)
         n = null();
-    else if (bindbuf[i].buffer_type == MYSQL_TYPE_LONGLONG)
-        n = *((int64*)bindbuf[i].buffer);
+    else if (bindbuf[i].buffer_type == MYSQL_TYPE_LONGLONG) {
+        if (bindbuf[i].is_unsigned) {
+            uint64_t u = *((uint64_t*)bindbuf[i].buffer);
+            if (isBoundUnsignedOverInt64(i)) {
+                // returned exactly as a number, as an int cannot hold it
+                char buf[24];
+                snprintf(buf, sizeof(buf), "%" PRIu64, u);
+                n = new QoreNumberNode(buf);
+            } else {
+                n = (int64)u;
+            }
+        } else {
+            n = *((int64*)bindbuf[i].buffer);
+        }
+    }
     else if (bindbuf[i].buffer_type == MYSQL_TYPE_DOUBLE)
         n = *((double*)bindbuf[i].buffer);
     else if (bindbuf[i].buffer_type == MYSQL_TYPE_STRING) {
@@ -1789,6 +1816,29 @@ int QoreMysqlBindGroup::getDataColumns(QoreHashNode& h, ExceptionSink* xsink, in
     return 0;
 }
 
+// a column of an unsigned integer type with a value that an int cannot hold is described as a DECIMAL(20,0) number
+// column (BIGINT UNSIGNED has at most 20 digits), so that the typed and columnar results hold its values exactly and
+// do not convert them to ints (issue #57)
+int QoreMysqlBindGroup::describeUnsignedOverflow(QoreHashNode& desc, ExceptionSink* xsink) {
+    for (int i = 0; i < myres.getNumFields(); ++i) {
+        if (!myres.hasUnsignedOverflow(i)) {
+            continue;
+        }
+        QoreHashNode* col = desc.getKeyValue(myres.getFieldName(i)).get<QoreHashNode>();
+        if (!col) {
+            continue;
+        }
+        col->setKeyValue("type", NT_NUMBER, xsink);
+        col->setKeyValue("native_type", new QoreStringNode("DECIMAL(20,0)"), xsink);
+        col->setKeyValue("precision", 20, xsink);
+        col->setKeyValue("scale", 0, xsink);
+        if (*xsink) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 #if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
 QoreColumnarResult* QoreMysqlBindGroup::getDataColumnar(int max, ExceptionSink* xsink) {
     std::vector<std::unique_ptr<MysqlColumnarBuilder>> builders;
@@ -1841,6 +1891,28 @@ QoreColumnarResult* QoreMysqlBindGroup::getDataColumnar(int max, ExceptionSink* 
     ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
     if (*xsink) {
         return nullptr;
+    }
+    if (describeUnsignedOverflow(**desc, xsink)) {
+        return nullptr;
+    }
+    // the columns are named as the builders name them (in lower case, and unique): the description of a column with
+    // a value that an int cannot hold is also given under that name, so that it is found (issue #57)
+    for (size_t i = 0; i < builders.size(); ++i) {
+        if (!myres.hasUnsignedOverflow(static_cast<int>(i))) {
+            continue;
+        }
+        const char* fname = myres.getFieldName(static_cast<int>(i));
+        const char* cname = builders[i]->getName();
+        if (!strcmp(fname, cname)) {
+            continue;
+        }
+        const QoreHashNode* col = desc->getKeyValue(fname).get<const QoreHashNode>();
+        if (col) {
+            desc->setKeyValue(cname, col->copy(), xsink);
+            if (*xsink) {
+                return nullptr;
+            }
+        }
     }
 
     return QoreColumnarResult::fromColumnHash(*h, *desc, xsink);
@@ -1895,6 +1967,10 @@ QoreValue QoreMysqlBindGroup::execTyped(ExceptionSink* xsink) {
             return QoreValue();
         }
 
+        if (describeUnsignedOverflow(**desc, xsink)) {
+            return QoreValue();
+        }
+
         QoreHashNode* rv = qore_dbi_make_typed_select_result(ds, *h, *desc, xsink);
         return rv ? QoreValue(rv) : QoreValue();
     }
@@ -1924,6 +2000,10 @@ QoreValue QoreMysqlBindGroup::selectRowsTyped(ExceptionSink* xsink) {
 
         ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
         if (*xsink) {
+            return QoreValue();
+        }
+
+        if (describeUnsignedOverflow(**desc, xsink)) {
             return QoreValue();
         }
 

@@ -114,6 +114,7 @@ class MysqlTest inherits QUnit::Test {
         addTestCase("number options test", \numberOptionsTest());
         addTestCase("timezone test", \timezoneTest());
         addTestCase("fetch error test", \fetchErrorTest());
+        addTestCase("unsigned integer test", \unsignedIntegerTest());
 
         set_return_value(main());
     }
@@ -886,6 +887,70 @@ class MysqlTest inherits QUnit::Test {
 
     # Test timezone handling
     #! an error that the server raises while the rows are fetched is raised (qore#6497)
+    # the values of an unsigned integer column are read whatever their size: a BIGINT UNSIGNED value of 2^63 or more
+    # ended the rows of the result without an error, so that it and the rows after it were lost (issue #57)
+    unsignedIntegerTest() {
+        Datasource db(connstr);
+        string table = sprintf("u64_%d_%d", getpid(), rand() % 1000000);
+        db.exec(sprintf("create table %s (k bigint unsigned not null primary key, t tinyint unsigned, "
+            "i int unsigned, v int)", table));
+        on_exit {
+            db.rollback();
+            db.exec("drop table " + table);
+            db.commit();
+        }
+        list<auto> key_vals = (5, 9223372036854775807, 9223372036854775808n, 18446744073709551615n);
+        foreach auto k in (key_vals) {
+            db.exec(sprintf("insert into %s values (%%v, 255, 4294967295, %%v)", table), k, $#);
+        }
+        db.commit();
+        string sql = sprintf("select k, t, i, v from %s order by k", table);
+        hash<auto> h = db.select(sql);
+        assertEq(key_vals, h.k, "select()");
+        assertEq((255, 255, 255, 255), h.t);
+        assertEq((4294967295, 4294967295, 4294967295, 4294967295), h.i);
+        # a value that an int holds is an int, a larger one a number
+        assertEq(Type::Int, h.k[1].type());
+        assertEq(Type::Number, h.k[2].type());
+        assertEq(key_vals, (map $1.k, db.selectRows(sql)), "selectRows()");
+        # a columnar column with a value that an int cannot hold is a decimal column, which holds every value exactly
+        auto col = db.selectColumnar(sql).getColumn("k");
+        assertEq("buffer<decimal128>", col.fullType(), "selectColumnar()");
+        assertEq((map $1.toString(), key_vals), (map $1.toString(), asList(col)), "selectColumnar()");
+        # without such a value, it is an int64 column
+        assertEq("buffer<int64>", db.selectColumnar(sprintf("select k from %s where k < %%v", table),
+            9223372036854775808n).getColumn("k").fullType());
+        {
+            SQLStatement stmt(db);
+            on_exit stmt.close();
+            stmt.prepare(sql);
+            assertEq(key_vals, stmt.fetchColumns(-1).k, "SQLStatement");
+        }
+        # a large value bound as an argument finds its row
+        assertEq(3, db.selectRow(sprintf("select v from %s where k = %%v", table), 18446744073709551615n).v);
+
+        # typed results hold the values exactly
+        assertEq((map $1.toString(), key_vals), (map $1.toString(), db.selectTyped(sql).k), "selectTyped()");
+        assertEq((map $1.toString(), key_vals), (map $1.k.toString(), db.selectRowsTyped(sql)),
+            "selectRowsTyped()");
+        # a column alias in upper case, a NULL, and the large value first
+        db.exec(sprintf("create table %s_n (k bigint unsigned)", table));
+        on_exit {
+            db.rollback();
+            db.exec(sprintf("drop table %s_n", table));
+            db.commit();
+        }
+        db.exec(sprintf("insert into %s_n values (18446744073709551615), (NULL), (1)", table));
+        db.commit();
+        string sql_n = sprintf("select k as K from %s_n order by k is null, k desc", table);
+        auto col_n = db.selectColumnar(sql_n).getColumn("k");
+        assertEq("buffer<*decimal128>", col_n.fullType(), "an upper-case alias, with a NULL");
+        assertEq(("18446744073709551615", "1", ""), (map $1 ?? "", (map $1.toString(), asList(col_n))));
+        assertEq((18446744073709551615n, 1, NULL), db.select(sql_n).k);
+    }
+
+
+
     /** The scalar subquery returns two rows for one row of the select only: the server sends the rows before it, then
         the error, which was lost: the select returned the rows before it as its whole result
     */

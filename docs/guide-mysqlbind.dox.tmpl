@@ -31,7 +31,7 @@ date now = db.selectRow("select current_timestamp into :time").time;
     |<tt>SMALLINT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>MEDIUMINT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>INT</tt>|<tt>Type::Int</tt>|direct conversion
-    |<tt>BIGINT</tt>|<tt>Type::Int</tt>|direct conversion
+    |<tt>BIGINT</tt>|<tt>Type::Int</tt>|direct conversion; a <tt>BIGINT UNSIGNED</tt> value of 2^63 or more is returned as a <tt>Type::Number</tt>, and a typed or columnar result describes such a column as <tt>DECIMAL(20,0)</tt>
     |<tt>YEAR</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>BIT</tt>|<tt>Type::Int</tt>|direct conversion
     |<tt>DECIMAL</tt>|<tt>Type::Int</tt>, <tt>Type::String</tt>, or <tt>Type::Number</tt>|depends on @ref mysqloptionsguide "driver options"
