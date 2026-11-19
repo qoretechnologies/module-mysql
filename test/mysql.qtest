@@ -115,6 +115,7 @@ class MysqlTest inherits QUnit::Test {
         addTestCase("timezone test", \timezoneTest());
         addTestCase("fetch error test", \fetchErrorTest());
         addTestCase("unsigned integer test", \unsignedIntegerTest());
+        addTestCase("long values test", \longValuesTest());
 
         set_return_value(main());
     }
@@ -887,6 +888,58 @@ class MysqlTest inherits QUnit::Test {
 
     # Test timezone handling
     #! an error that the server raises while the rows are fetched is raised (qore#6497)
+    # a string or binary value longer than the buffer of its column (ex: MySQL 8 gives a select-list parameter a
+    # length of 64 KB) is read whole, in rows with short values and NULLs too (issue #59)
+    longValuesTest() {
+        Datasource db(connstr);
+        on_exit db.rollback();
+        string s2 = strmul("b", 80000);
+        string s3 = strmul("c", 300000);
+        # two long values in one row
+        hash<auto> row = db.selectRow("select %v as s, %v as t, 1 as n", s2, s3);
+        assertEq(s2, row.s, "selectRow(): first");
+        assertEq(s3, row.t, "selectRow(): second");
+        assertEq(1, row.n.toInt());
+        # long values in several rows: the buffer read again for the first row is used for the next ones
+        string sql = "select concat(%v, t.x) as s, t.n from (select 'x' as x, 1 as n union all select 'y', 2 "
+            "union all select 'z', 3) t order by t.n";
+        list<string> exp = (s3 + "x", s3 + "y", s3 + "z");
+        assertEq(exp, db.select(sql, s3).s, "select()");
+        assertEq(exp, (map $1.s, db.selectRows(sql, s3)), "selectRows()");
+        assertEq(exp, asList(db.selectColumnar(sql, s3).getColumn("s")), "selectColumnar()");
+        {
+            SQLStatement stmt(db);
+            on_exit stmt.close();
+            stmt.prepare(sql);
+            stmt.bind(s3);
+            list<string> got = ();
+            while (stmt.next()) {
+                got += stmt.fetchRow().s;
+            }
+            assertEq(exp, got, "SQLStatement");
+            # executed again with a longer value
+            string s4 = strmul("d", 500000);
+            stmt.bind(s4);
+            assertEq((s4 + "x", s4 + "y", s4 + "z"), (map $1.s, stmt.fetchRows(-1)), "SQLStatement again");
+            # and with a shorter one after the buffers grew
+            stmt.bind("ab");
+            assertEq(("abx", "aby", "abz"), (map $1.s, stmt.fetchRows(-1)), "SQLStatement shorter");
+        }
+        # a binary value: its bytes (MySQL 8 gives a binary select-list parameter as a string, also a short one); with
+        # a NUL byte appended, it is a binary column
+        binary b = binary(strmul("x", 100000));
+        assertEq(b, binary(db.selectRow("select %v as b", b).b), "binary");
+        assertEq(b + binary(chr(0)), db.selectRow("select concat(%v, unhex('00')) as b", b).b, "binary column");
+        # a multibyte string (lengths in bytes)
+        string mb = strmul("ü€😀", 20000);
+        assertEq(mb, db.selectRow("select %v as s", mb).s, "utf8mb4");
+        # short values and NULLs in rows with long values of the same column
+        list<hash<auto>> rows = db.selectRows("select case t.n when 2 then null when 3 then 'short' else "
+            "concat(%v, t.n) end as s, t.n from (select 1 as n union all select 2 union all select 3 union all "
+            "select 4) t order by t.n", s3);
+        assertEq((s3 + "1", NULL, "short", s3 + "4"), (map $1.s, rows), "short values and NULLs");
+    }
+
     # the values of an unsigned integer column are read whatever their size: a BIGINT UNSIGNED value of 2^63 or more
     # ended the rows of the result without an error, so that it and the rows after it were lost (issue #57)
     unsignedIntegerTest() {
