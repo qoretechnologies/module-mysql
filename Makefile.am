@@ -2,7 +2,8 @@ AUTOMAKE_OPTIONS = foreign
 
 SUBDIRS = src
 
-noinst_HEADERS = src/qore-mysql.h \
+noinst_HEADERS = src/MysqlRedact.h \
+	src/qore-mysql.h \
 	src/qore-mysql-module.h
 
 EXTRA_DIST = COPYING.LGPL COPYING.GPL ChangeLog AUTHORS README \
@@ -12,6 +13,7 @@ EXTRA_DIST = COPYING.LGPL COPYING.GPL ChangeLog AUTHORS README \
 	patches/mariadb-aarch64-clobbers.patch \
 	patches/mariadb-infile-error-bounds.patch \
 	test/mariadb-async-context.py \
+	test/mysql-diagnostic.cpp \
 	test/mariadb-infile-error.c \
 	test/connection-setup.qtest \
 	test/mysql.qtest \

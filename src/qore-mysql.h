@@ -30,6 +30,8 @@
 #include <qore/Qore.h>
 #include <qore/QoreSandboxManager.h>
 
+#include "MysqlRedact.h"
+
 #include <mysql.h>
 #include <errmsg.h>
 
@@ -266,7 +268,7 @@ public:
 DLLLOCAL MYSQL* qore_mysql_init(Datasource *ds, ExceptionSink* xsink);
 //! Validates a connection timeout in seconds; zero selects the native client default.
 DLLLOCAL int qore_mysql_connect_timeout(QoreValue value, unsigned int& timeout, ExceptionSink* xsink);
-DLLLOCAL int mysql_set_collation(MYSQL* db, const char* collation_str, ExceptionSink* xsink);
+DLLLOCAL int mysql_set_collation(Datasource& ds, MYSQL* db, const char* collation_str, ExceptionSink* xsink);
 
 //! exception argument key holding the SQLSTATE of a MySQL error
 #define QORE_MYSQL_ALTERR "alterr"
@@ -296,30 +298,34 @@ static inline QoreHashNode* qore_mysql_make_error_arg(unsigned int errnum, const
     return arg.release();
 }
 
-//! returns an exception argument hash for the last error reported on a MySQL connection
-/** @param db the connection reporting the error
-    @param xsink the exception sink for the new hash
+//! Snapshot the native diagnostic before formatting the exception description or its structured argument.
+struct MysqlDiagnostic {
+    unsigned int code;
+    const char* state;
+    std::string text;
 
-    @return the exception argument hash; always returns a value
-*/
-static inline QoreHashNode* qore_mysql_error_arg(MYSQL* db, ExceptionSink* xsink) {
-    return qore_mysql_make_error_arg(mysql_errno(db), mysql_sqlstate(db), mysql_error(db), xsink);
-}
+    MysqlDiagnostic(const Datasource& ds, MYSQL* db)
+        : code(mysql_errno(db)), state(mysql_sqlstate(db)),
+          text(mysql_mask_diagnostic(mysql_error(db), ds.getUsername(), ds.getPassword(), ds.getDBName())) {
+    }
 
-//! returns an exception argument hash for the last error reported on a MySQL statement
-/** Statement errors must be read from the statement handle; a client-side statement error is not
-    reported on the connection at all, and a connection carries the error for its most recent
-    operation, which is not necessarily the statement's
+    MysqlDiagnostic(const Datasource& ds, MYSQL_STMT* stmt)
+        : code(mysql_stmt_errno(stmt)), state(mysql_stmt_sqlstate(stmt)),
+          text(mysql_mask_diagnostic(mysql_stmt_error(stmt), ds.getUsername(), ds.getPassword(), ds.getDBName())) {
+    }
 
-    @param stmt the statement reporting the error
-    @param xsink the exception sink for the new hash
+    QoreHashNode* arg(ExceptionSink* xsink) const {
+        return qore_mysql_make_error_arg(code, state, text.c_str(), xsink);
+    }
 
-    @return the exception argument hash; always returns a value
-*/
-static inline QoreHashNode* qore_mysql_stmt_error_arg(MYSQL_STMT* stmt, ExceptionSink* xsink) {
-    return qore_mysql_make_error_arg(mysql_stmt_errno(stmt), mysql_stmt_sqlstate(stmt),
-        mysql_stmt_error(stmt), xsink);
-}
+    void raise(ExceptionSink* xsink, const char* id, const char* prefix = "") const {
+        xsink->raiseExceptionArg(id, arg(xsink), "%s%s", prefix, text.c_str());
+    }
+
+    void raiseNumbered(ExceptionSink* xsink, const char* id) const {
+        xsink->raiseExceptionArg(id, arg(xsink), "error %u: %s", code, text.c_str());
+    }
+};
 
 //! fetches the next row of a statement's result set (qore#6497)
 /** An error that the server reports while the rows are read, such as an error raised by a recursive query that
@@ -327,13 +333,14 @@ static inline QoreHashNode* qore_mysql_stmt_error_arg(MYSQL_STMT* stmt, Exceptio
     as its whole result.  The error is read from the statement and, if the statement reports none, from the
     connection.
 
+    @param ds the datasource of the statement
     @param stmt the statement whose result set is read
     @param db the connection of the statement
     @param xsink the exception sink for the error
 
     @return 1 if a row was fetched, 0 if there are no more rows, -1 if an error was raised
 */
-static inline int qore_mysql_stmt_fetch(MYSQL_STMT* stmt, MYSQL* db, ExceptionSink* xsink) {
+static inline int qore_mysql_stmt_fetch(const Datasource& ds, MYSQL_STMT* stmt, MYSQL* db, ExceptionSink* xsink) {
     int rc = mysql_stmt_fetch(stmt);
     if (!rc) {
         return 1;
@@ -349,11 +356,9 @@ static inline int qore_mysql_stmt_fetch(MYSQL_STMT* stmt, MYSQL* db, ExceptionSi
         return -1;
     }
     if (mysql_stmt_errno(stmt)) {
-        xsink->raiseExceptionArg("DBI:MYSQL:FETCH-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-            "error fetching a row: %s", mysql_stmt_error(stmt));
+        MysqlDiagnostic(ds, stmt).raise(xsink, "DBI:MYSQL:FETCH-ERROR", "error fetching a row: ");
     } else if (db && mysql_errno(db)) {
-        xsink->raiseExceptionArg("DBI:MYSQL:FETCH-ERROR", qore_mysql_error_arg(db, xsink),
-            "error fetching a row: %s", mysql_error(db));
+        MysqlDiagnostic(ds, db).raise(xsink, "DBI:MYSQL:FETCH-ERROR", "error fetching a row: ");
     } else {
         xsink->raiseException("DBI:MYSQL:FETCH-ERROR", "error fetching a row; the server reported no error "
             "message");
@@ -426,7 +431,7 @@ public:
             ds->connectionAborted();
             return -1;
         }
-        if (!collation.empty() && mysql_set_collation(new_db, collation.c_str(), xsink)) {
+        if (!collation.empty() && mysql_set_collation(*ds, new_db, collation.c_str(), xsink)) {
             return -1;
         }
 
@@ -461,17 +466,8 @@ public:
         return mysql_rollback(db);
     }
 
-    DLLLOCAL const char *error() {
-        return mysql_error(db);
-    }
-
     DLLLOCAL int q_errno() {
         return mysql_errno(db);
-    }
-
-    //! returns an exception argument hash for the last error reported on this connection
-    DLLLOCAL QoreHashNode* getErrorArg(ExceptionSink* xsink) {
-        return qore_mysql_error_arg(db, xsink);
     }
 
     DLLLOCAL MYSQL_STMT *stmt_init(ExceptionSink* xsink) {
@@ -512,7 +508,7 @@ public:
                 return -1;
             }
             new_collation = str->c_str();
-            int rc = mysql_set_collation(db, new_collation.c_str(), xsink);
+            int rc = mysql_set_collation(ds, db, new_collation.c_str(), xsink);
             if (!rc) {
                 collation = new_collation;
             }
@@ -666,7 +662,6 @@ public:
 
     DLLLOCAL void add(char *name) {
         phl.push_back(name);
-        printd(5, "QoreMysqlBindGroup::add() placeholder '%s'\n", name);
         hasOutput = true;
     }
 
