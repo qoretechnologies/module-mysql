@@ -117,6 +117,10 @@ public class MysqlErrorInfoTest inherits QUnit::Test {
             ds.select("select * from qore_mysql_no_such_table_xyz");
         }, "selecting from a missing table must fail");
         assertErrorInfo(ex, ErrNoSuchTable, SqlStateNoSuchTable);
+        foreach string diagnostic in (ex.desc, ex.arg.alterr_diag) {
+            assertTrue(index(diagnostic, "****.qore_mysql_no_such_table_xyz") >= 0,
+                "the table remains identifiable in the masked diagnostic");
+        }
         assertRegex("qore_mysql_no_such_table_xyz", ex.arg.alterr_diag);
     }
 
@@ -129,6 +133,10 @@ public class MysqlErrorInfoTest inherits QUnit::Test {
             ds.execRaw("select * from qore_mysql_no_such_table_xyz");
         }, "an unprepared statement against a missing table must fail");
         assertErrorInfo(ex, ErrNoSuchTable, SqlStateNoSuchTable);
+        foreach string diagnostic in (ex.desc, ex.arg.alterr_diag) {
+            assertTrue(index(diagnostic, "****.qore_mysql_no_such_table_xyz") >= 0,
+                "the table remains identifiable in the masked diagnostic");
+        }
     }
 
     errorTextNotAFormatStringTest() {
@@ -155,6 +163,8 @@ public class MysqlErrorInfoTest inherits QUnit::Test {
         }
 
         hash<auto> params = parse_datasource(cast<string>(connstr));
+        # Use a known test identity so the checks do not depend on the configured user name.
+        params.user = "qore_masking_fixture_6993";
         params.pass = "qore-mysql-error-info-wrong-password";
 
         Datasource ds(params);
@@ -162,6 +172,10 @@ public class MysqlErrorInfoTest inherits QUnit::Test {
             "opening a connection with the wrong password must fail");
         assertEq("DBI:MYSQL:CONNECT-ERROR", ex.err);
         assertErrorInfo(ex, ErrAccessDenied, SqlStateAccessDenied);
+        foreach string diagnostic in (ex.desc, ex.arg.alterr_diag) {
+            assertTrue(index(diagnostic, "****") >= 0, "the connection value is masked");
+            assertTrue(index(diagnostic, params.user) < 0, "the diagnostic omits the connection value");
+        }
     }
 
     deadlockErrorInfoTest() {

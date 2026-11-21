@@ -39,6 +39,8 @@ mkdir -p ${MODULE_SRC_DIR}/build
 cd ${MODULE_SRC_DIR}/build
 cmake .. -DCMAKE_BUILD_TYPE=debug -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}
 make -j${MAKE_JOBS}
+"${CXX:-c++}" -std=c++17 "../test/mysql-diagnostic.cpp" -o mysql-diagnostic-test
+./mysql-diagnostic-test
 make install
 
 # add Qore user and group

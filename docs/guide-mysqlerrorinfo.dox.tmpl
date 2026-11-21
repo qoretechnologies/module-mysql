@@ -11,10 +11,13 @@
     |!Key|!Type|!Description
     |\c alterr|<tt>Type::String</tt>|the five-character \c SQLSTATE for the error (for example, \c "40001"); an empty string if the client library reports no \c SQLSTATE
     |\c alterr_code|<tt>Type::Int</tt>|the MySQL-specific error number (for example, \c 1213 for \c ER_LOCK_DEADLOCK)
-    |\c alterr_diag|<tt>Type::String</tt>|the diagnostic text for the error as reported by MySQL
+    |\c alterr_diag|<tt>Type::String</tt>|the diagnostic text for the error, with connection values masked
 
     All three keys are always present, so that they can be read without testing for their presence
-    first.
+    first. The description and \c alterr_diag replace whole occurrences of the configured user and database names
+    with \c ****, ignoring ASCII case. As in the Oracle driver, an exact password is masked when it is at least
+    eight characters long and contains a run of letters and digits with at least one of each. This avoids disclosing
+    a password by masking a common word or number in a standard message.
 
     Both the \c SQLSTATE and the error number are needed to classify an error; the \c SQLSTATE alone
     is not sufficient, because MySQL reports many unrelated errors with the generic value

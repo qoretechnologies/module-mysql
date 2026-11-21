@@ -319,7 +319,8 @@ static MYSQL* mysql_connect_cancellable(MYSQL* db, Datasource* ds, const char* h
         const char* unix_socket, ExceptionSink* xsink) {
 #if defined(HAVE_MYSQL_REAL_CONNECT_START) && defined(_QORE_HAS_CANCELLABLE_POLL)
     if (mysql_options(db, MYSQL_OPT_NONBLOCK, nullptr)) {
-        xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not enable nonblocking connection: %s", mysql_error(db));
+        xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not enable nonblocking connection: %s",
+            MysqlDiagnostic(*ds, db).text.c_str());
         return nullptr;
     }
     MYSQL* result = nullptr;
@@ -355,7 +356,8 @@ static MYSQL* qore_mysql_new_handle(Datasource* ds, ExceptionSink* xsink) {
                 return nullptr;
             }
             if (mysql_options(db, MYSQL_OPT_CONNECT_TIMEOUT, &timeout)) {
-                xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not set connection timeout: %s", mysql_error(db));
+                xsink->raiseException("DBI:MYSQL:INIT-ERROR", "could not set connection timeout: %s",
+                    MysqlDiagnostic(*ds, db).text.c_str());
                 mysql_close(db);
                 return nullptr;
             }
@@ -364,8 +366,7 @@ static MYSQL* qore_mysql_new_handle(Datasource* ds, ExceptionSink* xsink) {
 #ifdef QORE_MYSQL_HAVE_BULK_LOAD
     unsigned int local_infile = 1;
     if (mysql_options(db, MYSQL_OPT_LOCAL_INFILE, &local_infile)) {
-        xsink->raiseExceptionArg("DBI:MYSQL:INIT-ERROR", qore_mysql_error_arg(db, xsink),
-            "could not enable guarded LOCAL INFILE support: %s", mysql_error(db));
+        MysqlDiagnostic(*ds, db).raise(xsink, "DBI:MYSQL:INIT-ERROR", "could not enable guarded LOCAL INFILE support: ");
         mysql_close(db);
         return nullptr;
     }
@@ -415,15 +416,15 @@ static QoreListNode* mysql_get_connect_targets(Datasource* ds, ExceptionSink* xs
     if (mysql_host_is_socket(host)) {
         // an abstract socket is not a file that the filesystem policy can decide
         if (mysql_default_unix_socket[0] == '@') {
-            xsink->raiseException("NETWORK-ACCESS-DENIED", "the MySQL connection uses the abstract UNIX socket '%s', "
-                "which cannot be checked against the sandbox", mysql_default_unix_socket.c_str());
+            xsink->raiseException("NETWORK-ACCESS-DENIED", "the MySQL connection uses an abstract UNIX socket "
+                "which cannot be checked against the sandbox");
             return nullptr;
         }
         h->setKeyValue("socket", new QoreStringNode(mysql_default_unix_socket), xsink);
     } else if (strstr(host, "://")) {
         // a connection handler plugin (MariaDB Connector/C), which chooses its own destinations
-        xsink->raiseException("NETWORK-ACCESS-DENIED", "the MySQL connection uses the connection handler '%s', whose "
-            "destinations cannot be checked against the sandbox", host);
+        xsink->raiseException("NETWORK-ACCESS-DENIED", "the MySQL connection uses a connection handler whose "
+            "destinations cannot be checked against the sandbox");
         return nullptr;
     } else {
         h->setKeyValue("host", new QoreStringNode(host), xsink);
@@ -502,7 +503,7 @@ static int mysql_connect_checked(MYSQL*& db, Datasource* ds, const QoreListNode*
         }
     }
     if (!*xsink) {
-        xsink->raiseExceptionArg("DBI:MYSQL:CONNECT-ERROR", qore_mysql_error_arg(db, xsink), "%s", mysql_error(db));
+        MysqlDiagnostic(*ds, db).raise(xsink, "DBI:MYSQL:CONNECT-ERROR");
     }
     mysql_close(db);
     db = nullptr;
@@ -511,7 +512,7 @@ static int mysql_connect_checked(MYSQL*& db, Datasource* ds, const QoreListNode*
 #endif
 
 MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
-    printd(5, "qore_mysql_init() datasource %p for DB: %s\n", ds, ds->getDBName() ? ds->getDBName() : "unknown");
+    printd(5, "qore_mysql_init() datasource %p\n", ds);
 
     if (!ds->getDBName()) {
         xsink->raiseException("DATASOURCE-MISSING-DBNAME", "Datasource has an empty dbname parameter");
@@ -546,8 +547,7 @@ MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
         port = MYSQL_PORT;
     }
 
-    printd(3, "qore_mysql_init(): user: '%s' db: '%s' (encoding=%s) host: '%s' port: %d\n",
-            ds->getUsername(), ds->getDBName(), ds->getDBEncoding() ? ds->getDBEncoding() : "(none)", ds->getHostName(), port);
+    printd(3, "qore_mysql_init(): datasource %p port %d\n", ds, port);
 
 #ifdef QDBI_METHOD_GET_CONNECT_TARGETS
     if (const QoreListNode* checked = ds->getCheckedConnectTargets()) {
@@ -559,8 +559,7 @@ MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
 #endif
     if (!mysql_connect_cancellable(db, ds, ds->getHostName(), port, nullptr, xsink)) {
         if (!*xsink) {
-            xsink->raiseExceptionArg("DBI:MYSQL:CONNECT-ERROR", qore_mysql_error_arg(db, xsink), "%s",
-                mysql_error(db));
+            MysqlDiagnostic(*ds, db).raise(xsink, "DBI:MYSQL:CONNECT-ERROR");
         }
         mysql_close(db);
         return nullptr;
@@ -614,7 +613,7 @@ MYSQL* qore_mysql_init(Datasource* ds, ExceptionSink* xsink) {
 #endif
     if (qore_check_cancel(xsink, "initializing the MySQL connection") || init_error) {
         if (!*xsink) {
-            xsink->raiseExceptionArg("DBI:MYSQL:INIT-ERROR", qore_mysql_error_arg(db, xsink), "%s", mysql_error(db));
+            MysqlDiagnostic(*ds, db).raise(xsink, "DBI:MYSQL:INIT-ERROR");
         }
         mysql_close(db);
         return nullptr;
@@ -1133,11 +1132,10 @@ private:
 }
 #endif
 
-int mysql_set_collation(MYSQL* db, const char* collation_str, ExceptionSink* xsink) {
+int mysql_set_collation(Datasource& ds, MYSQL* db, const char* collation_str, ExceptionSink* xsink) {
     QoreStringMaker sql("set collation_connection = '%s'", collation_str);
     if (mysql_query(db, sql.c_str())) {
-        xsink->raiseExceptionArg("MYSQL-COLLATION-ERROR", qore_mysql_error_arg(db, xsink), "%s",
-            mysql_error(db));
+        MysqlDiagnostic(ds, db).raise(xsink, "MYSQL-COLLATION-ERROR");
         return -1;
     }
 
@@ -1159,8 +1157,7 @@ static int qore_mysql_commit(Datasource* ds, ExceptionSink* xsink) {
 
     // calls mysql_commit() on the connection
     if (d_mysql->commit()) {
-        xsink->raiseExceptionArg("DBI:MYSQL:COMMIT-ERROR", d_mysql->getErrorArg(xsink), "%s",
-            d_mysql->error());
+        MysqlDiagnostic(*ds, d_mysql->db).raise(xsink, "DBI:MYSQL:COMMIT-ERROR");
         return -1;
     }
     return 0;
@@ -1183,8 +1180,7 @@ static int qore_mysql_rollback(Datasource* ds, ExceptionSink* xsink) {
 
     // calls mysql_rollback() on the connection
     if (d_mysql->rollback()) {
-        xsink->raiseExceptionArg("DBI:MYSQL:ROLLBACK-ERROR", d_mysql->getErrorArg(xsink), "%s",
-            d_mysql->error());
+        MysqlDiagnostic(*ds, d_mysql->db).raise(xsink, "DBI:MYSQL:ROLLBACK-ERROR");
         return -1;
     }
     return 0;
@@ -1438,8 +1434,7 @@ int QoreMysqlBindGroup::prepare(bool unsupported_ok, ExceptionSink* xsink) {
       if (en != CR_SERVER_GONE_ERROR) {
          if (en == ER_UNSUPPORTED_PS && unsupported_ok)
             return 1;
-         xsink->raiseExceptionArg("DBI:MYSQL:STATEMENT-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-             "error %d: %s", en, mysql_stmt_error(stmt));
+         MysqlDiagnostic(*ds, stmt).raiseNumbered(xsink, "DBI:MYSQL:STATEMENT-ERROR");
          return -1;
       }
 
@@ -1474,8 +1469,7 @@ int QoreMysqlBindGroup::bindArgs(ExceptionSink* xsink) {
 
     // now perform the bind
     if (mysql_stmt_bind_param(stmt, bind)) {
-        xsink->raiseExceptionArg("DBI:MYSQL-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-            "error %d: %s", mysql_stmt_errno(stmt), mysql_stmt_error(stmt));
+        MysqlDiagnostic(*ds, stmt).raiseNumbered(xsink, "DBI:MYSQL-ERROR");
         return -1;
     }
 
@@ -1605,7 +1599,6 @@ int QoreMysqlBindGroup::parse(const QoreListNode* args, ExceptionSink* xsink) {
                 str->replace(offset, 2, "?");
                 p = str->getBuffer() + offset;
 
-                printd(5, "QoreMysqlBindGroup::parse() newstr=%s\n", str->getBuffer());
                 printd(5, "QoreMysqlBindGroup::parse() adding value type=%s\n", v.getTypeName());
                 add(v);
                 continue;
@@ -1623,7 +1616,7 @@ int QoreMysqlBindGroup::parse(const QoreListNode* args, ExceptionSink* xsink) {
                 while (isalnum(*p) || (*p) == '_')
                     tstr.concat(*(p++));
 
-                printd(5, "QoreMysqlBindGroup::parse() adding placeholder for '%s'\n", tstr.getBuffer());
+                printd(5, "QoreMysqlBindGroup::parse() adding output placeholder\n");
                 add(tstr.giveBuffer());
 
                 // substitute "@" for ":" in bind name
@@ -1631,7 +1624,7 @@ int QoreMysqlBindGroup::parse(const QoreListNode* args, ExceptionSink* xsink) {
                 int offset = w - str->getBuffer();
                 str->replace(offset, 1, "@");
 
-                printd(5, "QoreMysqlBindGroup::parse() offset=%d, new str=%s\n", offset, str->getBuffer());
+                printd(5, "QoreMysqlBindGroup::parse() offset=%d\n", offset);
                 continue;
             }
         }
@@ -1671,8 +1664,7 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
 
         // prepare the statement for execution
         if (mysql_stmt_prepare(tmp_stmt, qstr.getBuffer(), qstr.strlen())) {
-            xsink->raiseExceptionArg("DBI:MYSQL:ERROR", qore_mysql_stmt_error_arg(tmp_stmt, xsink), "%s",
-                mysql_stmt_error(tmp_stmt));
+            MysqlDiagnostic(*ds, tmp_stmt).raise(xsink, "DBI:MYSQL:ERROR");
             return nullptr;
         }
 
@@ -1684,24 +1676,21 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
         if (tmpres) {
             // execute the temporary statement
             if (mysql_stmt_execute(tmp_stmt)) {
-                xsink->raiseExceptionArg("DBI:MYSQL:ERROR", qore_mysql_stmt_error_arg(tmp_stmt, xsink), "%s",
-                    mysql_stmt_error(tmp_stmt));
+                MysqlDiagnostic(*ds, tmp_stmt).raise(xsink, "DBI:MYSQL:ERROR");
                 return nullptr;
             }
 
             int rows = mysql_stmt_affected_rows(tmp_stmt);
             if (rows) {
                 if (tmpres.bind(tmp_stmt)) {
-                    xsink->raiseExceptionArg("DBI:MYSQL:BIND-ERROR",
-                        qore_mysql_stmt_error_arg(tmp_stmt, xsink), "error binding result columns: %s",
-                        mysql_stmt_error(tmp_stmt));
+                    MysqlDiagnostic(*ds, tmp_stmt).raise(xsink, "DBI:MYSQL:BIND-ERROR", "error binding result columns: ");
                     return nullptr;
                 }
 
                 if (rows > 1) {
                     ReferenceHolder<QoreListNode> l(new QoreListNode(autoTypeInfo), xsink);
                     int frc;
-                    while ((frc = qore_mysql_stmt_fetch(tmp_stmt, mydata->db, xsink)) > 0)
+                    while ((frc = qore_mysql_stmt_fetch(*ds, tmp_stmt, mydata->db, xsink)) > 0)
                         l->push(tmpres.getBoundColumnValue(0, true), xsink);
                     if (frc < 0) {
                         return nullptr;
@@ -1709,7 +1698,7 @@ QoreHashNode* QoreMysqlBindGroup::getOutputHash(ExceptionSink* xsink) {
                     v = l.release();
                 }
                 else {
-                    if (qore_mysql_stmt_fetch(tmp_stmt, mydata->db, xsink) < 0) {
+                    if (qore_mysql_stmt_fetch(*ds, tmp_stmt, mydata->db, xsink) < 0) {
                         return nullptr;
                     }
                     v = tmpres.getBoundColumnValue(0, true);
@@ -1748,8 +1737,7 @@ int QoreMysqlBindGroup::execIntern(ExceptionSink* xsink) {
     }
 
     if (mysql_stmt_execute(stmt)) {
-        xsink->raiseExceptionArg("DBI:MYSQL:ERROR", qore_mysql_stmt_error_arg(stmt, xsink), "%s",
-            mysql_stmt_error(stmt));
+        MysqlDiagnostic(*ds, stmt).raise(xsink, "DBI:MYSQL:ERROR");
         return -1;
     }
 
@@ -1762,7 +1750,7 @@ int QoreMysqlBindGroup::getDataRows(QoreListNode& l, ExceptionSink* xsink, int m
     // row count
     int c = 0;
     while (max < 0 || c < max) {
-        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        int rc = qore_mysql_stmt_fetch(*ds, stmt, mydata->db, xsink);
         if (rc < 0) {
             return -1;
         }
@@ -1790,7 +1778,7 @@ int QoreMysqlBindGroup::getDataColumns(QoreHashNode& h, ExceptionSink* xsink, in
     // row count
     int c = 0;
     while (max < 0 || c < max) {
-        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        int rc = qore_mysql_stmt_fetch(*ds, stmt, mydata->db, xsink);
         if (rc < 0) {
             return -1;
         }
@@ -1856,7 +1844,7 @@ QoreColumnarResult* QoreMysqlBindGroup::getDataColumnar(int max, ExceptionSink* 
 
     int c = 0;
     while (max < 0 || c < max) {
-        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        int rc = qore_mysql_stmt_fetch(*ds, stmt, mydata->db, xsink);
         if (rc < 0) {
             return nullptr;
         }
@@ -1930,8 +1918,7 @@ QoreValue QoreMysqlBindGroup::exec(ExceptionSink* xsink, bool cols) {
             return h.release();
 
         if (myres.bind(stmt)) {
-            xsink->raiseExceptionArg("DBI:MYSQL:BIND-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-                "error binding result columns: %s", mysql_stmt_error(stmt));
+            MysqlDiagnostic(*ds, stmt).raise(xsink, "DBI:MYSQL:BIND-ERROR", "error binding result columns: ");
             return QoreValue();
         }
 
@@ -1953,8 +1940,7 @@ QoreValue QoreMysqlBindGroup::execTyped(ExceptionSink* xsink) {
         ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
 
         if (myres.bind(stmt)) {
-            xsink->raiseExceptionArg("DBI:MYSQL:BIND-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-                "error binding result columns: %s", mysql_stmt_error(stmt));
+            MysqlDiagnostic(*ds, stmt).raise(xsink, "DBI:MYSQL:BIND-ERROR", "error binding result columns: ");
             return QoreValue();
         }
 
@@ -1989,8 +1975,7 @@ QoreValue QoreMysqlBindGroup::selectRowsTyped(ExceptionSink* xsink) {
         ReferenceHolder<QoreListNode> l(new QoreListNode(autoTypeInfo), xsink);
 
         if (myres.bind(stmt)) {
-            xsink->raiseExceptionArg("DBI:MYSQL:BIND-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-                "error binding result columns: %s", mysql_stmt_error(stmt));
+            MysqlDiagnostic(*ds, stmt).raise(xsink, "DBI:MYSQL:BIND-ERROR", "error binding result columns: ");
             return QoreValue();
         }
 
@@ -2030,8 +2015,7 @@ QoreColumnarResult* QoreMysqlBindGroup::selectColumnar(ExceptionSink* xsink) {
     }
 
     if (myres.bind(stmt)) {
-        xsink->raiseExceptionArg("DBI:MYSQL:BIND-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-            "error binding result columns: %s", mysql_stmt_error(stmt));
+        MysqlDiagnostic(*ds, stmt).raise(xsink, "DBI:MYSQL:BIND-ERROR", "error binding result columns: ");
         return nullptr;
     }
 
@@ -2050,8 +2034,7 @@ QoreValue QoreMysqlBindGroup::selectRows(ExceptionSink* xsink) {
             return l.release();
 
         if (myres.bind(stmt)) {
-            xsink->raiseExceptionArg("DBI:MYSQL:BIND-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-                "error binding result columns: %s", mysql_stmt_error(stmt));
+            MysqlDiagnostic(*ds, stmt).raise(xsink, "DBI:MYSQL:BIND-ERROR", "error binding result columns: ");
             return QoreValue();
         }
 
@@ -2077,15 +2060,14 @@ QoreHashNode* QoreMysqlBindGroup::selectRow(ExceptionSink* xsink) {
         }
 
         if (myres.bind(stmt)) {
-            xsink->raiseExceptionArg("DBI:MYSQL:BIND-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-                "error binding result columns: %s", mysql_stmt_error(stmt));
+            MysqlDiagnostic(*ds, stmt).raise(xsink, "DBI:MYSQL:BIND-ERROR", "error binding result columns: ");
             return nullptr;
         }
 
         QoreString tstr;
         const QoreEncoding* enc = ds->getQoreEncoding();
 
-        int rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+        int rc = qore_mysql_stmt_fetch(*ds, stmt, mydata->db, xsink);
         if (rc < 0) {
             return nullptr;
         }
@@ -2097,7 +2079,7 @@ QoreHashNode* QoreMysqlBindGroup::selectRow(ExceptionSink* xsink) {
                 assign_column_value(tstr, enc, myres.getFieldName(i), **h, myres.getBoundColumnValue(i, true));
 
             // see if there is a second row
-            rc = qore_mysql_stmt_fetch(stmt, mydata->db, xsink);
+            rc = qore_mysql_stmt_fetch(*ds, stmt, mydata->db, xsink);
             if (rc < 0) {
                 return nullptr;
             }
@@ -2238,8 +2220,7 @@ int QoreMysqlPreparedStatement::define(ExceptionSink *xsink) {
    //printd(5, "QoreMysqlPreparedStatement::define() this: %p myres: %d\n", this, (bool)myres);
    if (myres) {
       if (myres.bind(stmt)) {
-         xsink->raiseExceptionArg("DBI:MYSQL:BIND-ERROR", qore_mysql_stmt_error_arg(stmt, xsink),
-             "error binding result columns: %s", mysql_stmt_error(stmt));
+         MysqlDiagnostic(*ds, stmt).raise(xsink, "DBI:MYSQL:BIND-ERROR", "error binding result columns: ");
          return -1;
       }
    }
@@ -2441,7 +2422,7 @@ QoreHashNode* QoreMysqlBindGroup::describe(ExceptionSink *xsink) {
 
 bool QoreMysqlPreparedStatement::next(ExceptionSink* xsink) {
    assert(stmt);
-   return qore_mysql_stmt_fetch(stmt, mydata->db, xsink) > 0;
+   return qore_mysql_stmt_fetch(*ds, stmt, mydata->db, xsink) > 0;
 }
 
 static int mysql_stmt_api_prepare(SQLStatement* stmt, const QoreString& str, const QoreListNode* args, ExceptionSink* xsink) {
@@ -2733,8 +2714,7 @@ static QoreValue qore_mysql_do_sql(const QoreMysqlConnection& conn, const QoreSt
         return QoreValue();
 
     if (mysql_query(conn.db, tqstr->getBuffer())) {
-        xsink->raiseExceptionArg("DBI:MYSQL:SELECT-ERROR", qore_mysql_error_arg(conn.db, xsink), "%s",
-            mysql_error(conn.db));
+        MysqlDiagnostic(conn.ds, conn.db).raise(xsink, "DBI:MYSQL:SELECT-ERROR");
         return QoreValue();
     }
 
@@ -2743,8 +2723,7 @@ static QoreValue qore_mysql_do_sql(const QoreMysqlConnection& conn, const QoreSt
 
     MYSQL_RES* res = mysql_store_result(conn.db);
     if (!res) {
-        xsink->raiseExceptionArg("DBI:MYSQL:SELECT-ERROR", qore_mysql_error_arg(conn.db, xsink), "%s",
-            mysql_error(conn.db));
+        MysqlDiagnostic(conn.ds, conn.db).raise(xsink, "DBI:MYSQL:SELECT-ERROR");
         return QoreValue();
     }
     ON_BLOCK_EXIT(mysql_free_result, res);
@@ -2767,8 +2746,7 @@ static QoreHashNode* qore_mysql_do_select_row(const QoreMysqlConnection& conn, c
         return 0;
 
     if (mysql_query(conn.db, tqstr->getBuffer())) {
-        xsink->raiseExceptionArg("DBI:MYSQL:SELECT-ERROR", qore_mysql_error_arg(conn.db, xsink), "%s",
-            mysql_error(conn.db));
+        MysqlDiagnostic(conn.ds, conn.db).raise(xsink, "DBI:MYSQL:SELECT-ERROR");
         return 0;
     }
 
@@ -2777,8 +2755,7 @@ static QoreHashNode* qore_mysql_do_select_row(const QoreMysqlConnection& conn, c
 
     MYSQL_RES* res = mysql_store_result(conn.db);
     if (!res) {
-        xsink->raiseExceptionArg("DBI:MYSQL:SELECT-ERROR", qore_mysql_error_arg(conn.db, xsink), "%s",
-            mysql_error(conn.db));
+        MysqlDiagnostic(conn.ds, conn.db).raise(xsink, "DBI:MYSQL:SELECT-ERROR");
         return 0;
     }
     ON_BLOCK_EXIT(mysql_free_result, res);
@@ -2970,7 +2947,7 @@ static int qore_mysql_close_datasource(Datasource* ds) {
 
     QoreMysqlConnection *d_mysql = (QoreMysqlConnection*)ds->getPrivateData();
 
-    printd(3, "qore_mysql_close_datasource(): connection to %s closed.\n", ds->getDBName());
+    printd(3, "qore_mysql_close_datasource(): datasource %p closed.\n", ds);
 
     delete d_mysql;
     ds->setPrivateData(NULL);
