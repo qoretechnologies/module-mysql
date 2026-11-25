@@ -45,6 +45,8 @@ class MysqlSandboxTest inherits QUnit::Test {
         addTestCase("a host name is connected to by its checked addresses in turn", \testHostName());
         addTestCase("connection handler hosts are refused", \testHandlerHost());
         addTestCase("the UNIX socket is checked and connected to", \testSocket());
+        addTestCase("a socket directory replaced after the check is not used", \testPinnedSocketSwap());
+        addTestCase("a socket replaced by a link after the check is not used", \testPinnedSocketLeafSwap());
         set_return_value(main());
     }
 
@@ -235,6 +237,161 @@ printf(\"localhost=%%s\\n\", p.callFunction(\"open\", \"localhost\"));
 sm.addFilesystemDeniedPath(%s);
 printf(\"denied=%%s\\n\", p.callFunction(\"open\"));
 ";
+
+    #! a child that connects to the default socket in a sandbox that allows only the directory \a allowed and the
+    #! socket \a real; if a pattern is given, dbg_fs_swap_on_open() replaces the matching path by a link to the
+    #! target after the check
+    const PinChild = "%%modern
+%%requires mysql
+SandboxManager sm();
+sm.setNetworkDefaultPolicy(True);
+sm.setFilesystemDefaultPolicy(False);
+sm.addFilesystemAllowedPath(%s, QSEC_READ | QSEC_WRITE);
+sm.addFilesystemAllowedPath(%s, QSEC_READ | QSEC_WRITE);
+Program p(PO_NEW_STYLE);
+p.setSandboxManager(sm);
+p.parse(\"string sub open() { try { Datasource ds({\\\"type\\\": \\\"mysql\\\", \\\"user\\\": \\\"nobody\\\", \\\"pass\\\": \\\"nothing\\\", \\\"db\\\": \\\"nothing\\\"}); ds.open(); } catch (hash<ExceptionInfo> ex) { return ex.err + \\\": \\\" + ex.desc; } return \\\"NONE\\\"; }\", \"child\");
+string pattern = %s;
+if (pattern) {
+    call_function(\"dbg_fs_swap_on_open\", pattern, %s);
+}
+printf(\"open=%%s\\n\", p.callFunction(\"open\"));
+";
+
+    #! runs a PinChild with the given default socket and returns its output
+    static string runPinChild(string dir, string socket, string allowed, string real, *string pattern,
+            *string target) {
+        string script = dir + "/pin-child.q";
+        File f();
+        f.open2(script, O_CREAT | O_WRONLY | O_TRUNC);
+        f.write(sprintf(PinChild, sprintf("%y", allowed), sprintf("%y", real), sprintf("%y", pattern ?? ""),
+            sprintf("%y", target ?? "")));
+        f.close();
+        string module_dir = dirname(get_module_hash().mysql.filename);
+        string cmd = sprintf("MYSQL_UNIX_PORT=%s QORE_MODULE_DIR=%s%s %s %s 2>&1", quote(socket), quote(module_dir),
+            ENV.QORE_MODULE_DIR ? ":" + quote(ENV.QORE_MODULE_DIR) : "", quote(QORE_ARGV[0]), quote(script));
+        return backquote(cmd);
+    }
+
+    #! skips the case if the module does not connect through pinned sockets
+    /** A pinned socket is opened before the connection: a file that is not a socket is refused then, with an error
+        of the driver, and not by the client library
+    */
+    skipUnlessPinned(string dir, string allowed) {
+        string file = allowed + "/not-a-socket";
+        File f();
+        f.open2(file, O_CREAT | O_WRONLY | O_TRUNC);
+        f.close();
+        on_exit unlink(file);
+        string probe = runPinChild(dir, file, allowed, file);
+        if (probe !~ /is not a UNIX socket/) {
+            testSkip("this module does not connect through pinned sockets: " + trim(probe));
+        }
+    }
+
+    testPinnedSocketSwap() {
+        if (PlatformOS != "Linux") {
+            testSkip("UNIX sockets are reached through their pinned directories on Linux only");
+        }
+        if (!Option::HAVE_LIBRARY_DEBUGGING) {
+            testSkip("needs a Qore with library debugging");
+        }
+        TmpDir dir("mysql-pin");
+        string allowed = dir.path + "/allowed";
+        string real = dir.path + "/real";
+        string outside = dir.path + "/outside";
+        mkdir(allowed);
+        mkdir(real);
+        mkdir(outside);
+        string link = allowed + "/l";
+        symlink(real, link);
+
+        skipUnlessPinned(dir.path, allowed);
+
+        Socket inside();
+        inside.bind(real + "/mysql.sock");
+        inside.listen();
+        on_exit inside.close();
+        # a socket outside of the policy, where nothing must connect
+        Socket fake();
+        fake.bind(outside + "/mysql.sock");
+        fake.listen();
+        on_exit fake.close();
+
+        # the link to the socket directory checked is replaced by one to the directory outside after the check: the
+        # connection is made to the socket checked
+        Queue done();
+        background done.push(runPinChild(dir.path, link + "/mysql.sock", allowed, real + "/mysql.sock", link + "/*",
+            outside));
+        *Socket peer = inside.accept(FixtureTimeout);
+        if (!peer) {
+            # a connection to the socket outside is closed, so that the child ends
+            *Socket stray = fake.isDataAvailable(0) ? fake.accept(0) : NOTHING;
+            if (stray) {
+                stray.shutdown();
+                stray.close();
+            }
+            fail(sprintf("the driver did not connect to the socket checked%s: %s", stray ? " but to the one outside"
+                : "", done.get(FixtureTimeout)));
+            return;
+        }
+        peer.shutdown();
+        peer.close();
+        string out = done.get(FixtureTimeout);
+        assertRegex("open=DBI:MYSQL:CONNECT-ERROR", out, out);
+        assertEq(outside, readlink(link), "the link was replaced after the check");
+        # a pending connection makes a listening socket readable; the child has ended
+        assertFalse(fake.isDataAvailable(0), "nothing connected to the socket outside of the policy");
+    }
+
+    testPinnedSocketLeafSwap() {
+        if (PlatformOS != "Linux") {
+            testSkip("UNIX sockets are reached through their pinned directories on Linux only");
+        }
+        if (!Option::HAVE_LIBRARY_DEBUGGING) {
+            testSkip("needs a Qore with library debugging");
+        }
+        TmpDir dir("mysql-pin-leaf");
+        string allowed = dir.path + "/allowed";
+        string outside = dir.path + "/outside";
+        mkdir(allowed);
+        mkdir(outside);
+        skipUnlessPinned(dir.path, allowed);
+
+        Socket inside();
+        inside.bind(allowed + "/mysql.sock");
+        inside.listen();
+        on_exit inside.close();
+        # a socket outside of the policy, where nothing must connect
+        Socket fake();
+        fake.bind(outside + "/mysql.sock");
+        fake.listen();
+        on_exit fake.close();
+
+        # the socket checked is replaced by a link to the socket outside after the check: the connection is refused
+        Queue done();
+        background done.push(runPinChild(dir.path, allowed + "/mysql.sock", allowed, allowed + "/mysql.sock",
+            allowed + "/mysql.sock", outside + "/mysql.sock"));
+        # the child ends by itself unless it connected to the socket outside, where it waits for the server: that
+        # connection is then closed, so that it ends
+        string out;
+        *Socket stray;
+        try {
+            out = done.get(FixtureTimeout);
+        } catch (hash<ExceptionInfo> ex) {
+            stray = fake.isDataAvailable(0) ? fake.accept(0) : NOTHING;
+            if (stray) {
+                stray.shutdown();
+                stray.close();
+            }
+            out = done.get(FixtureTimeout);
+        }
+        # a pending connection makes a listening socket readable; the child has ended
+        assertFalse(exists stray || fake.isDataAvailable(0), "nothing connected to the socket outside of the "
+            "policy: " + out);
+        assertRegex("open=FILESYSTEM-ACCESS-DENIED", out, out);
+        assertEq("SYMBOLIC-LINK", hlstat(allowed + "/mysql.sock").type, "the socket was replaced after the check");
+    }
 
     testSocket() {
         TmpDir dir("mysql-sandbox");

@@ -8,6 +8,8 @@
     - connection values are masked in driver diagnostics (see @ref mysqlerrorinfoguide)
     - in a %Qore version that checks DBI connections against the sandbox, the driver reports the destination of a
       connection and connects to the checked socket or addresses only (see @ref mysql_sandbox)
+    - on Linux, with a %Qore version that pins the local path of a connection, the UNIX socket that was checked
+      against the sandbox is connected to in the directory that was checked (see @ref mysql_sandbox)
     - added \c connect-timeout and cancellable MariaDB connection establishment and session initialization
     - raised the build language requirement to C++17, matching the current Qore headers
     - included a native MariaDB Connector/C ARM64 coroutine fix and regression test in the source

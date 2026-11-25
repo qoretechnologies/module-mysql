@@ -24,6 +24,12 @@
     server certificate by default, a sandboxed connection to a server whose certificate names only its host name
     (no IP address) fails (a self-signed certificate is verified with the password instead and is not affected).
 
+    On Linux, with a %Qore version that pins the local path of a connection (\c QORE_HAS_DBI_PIN_CONNECT_PATH), the
+    UNIX socket that was checked is connected to in the directory that was checked, whatever its path names after
+    the check: the socket file is opened without following a symbolic link and the client library connects to it
+    through its descriptor (a \c /proc/self/fd/ path, which therefore appears in its error messages); a socket name
+    that is then a symbolic link is refused with \c FILESYSTEM-ACCESS-DENIED.
+
     @section mysql_connect_timeout Connection establishment
 
     The \c connect-timeout option accepts an integer from 0 to 2147483 seconds (default 0, the native
