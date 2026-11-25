@@ -30,6 +30,9 @@
 #include <qore/QoreColumnarResult.h>
 
 #include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <cctype>
 #include <cstring>
 #include <memory>
@@ -468,7 +471,58 @@ static int mysql_connect_checked(MYSQL*& db, Datasource* ds, const QoreListNode*
         return -1;
     }
     if (socket.getType() == NT_STRING) {
-        if (mysql_connect_cancellable(db, ds, "localhost", 0, socket.get<const QoreStringNode>()->c_str(), xsink)) {
+        const char* path = socket.get<const QoreStringNode>()->c_str();
+#if defined(QORE_HAS_DBI_PIN_CONNECT_PATH) && defined(__linux__)
+        // the socket is pinned and connected to in the directory checked, whatever its path names after the check
+        // (qore#7604); the library uses the path only to connect (a reconnect is a new connection, checked again)
+        std::unique_ptr<QoreDbiPinnedPath, decltype(&qore_dbi_pinned_path_free)> pin(
+            qore_dbi_pin_connect_path(ds, path, QSEC_READ | QSEC_WRITE, xsink), qore_dbi_pinned_path_free);
+        if (!pin) {
+            mysql_close(db);
+            db = nullptr;
+            return -1;
+        }
+        // the socket file itself is opened without following a link (O_PATH opens no file) and connected to through
+        // its descriptor, so that a socket name replaced after the check is not followed either
+        int sfd = -1;
+        std::string fd_path;
+        if (qore_dbi_pinned_path_dirfd(pin.get()) != AT_FDCWD) {
+            sfd = qore_dbi_pinned_path_open(pin.get(), nullptr, O_PATH, 0);
+            struct stat sbuf;
+            bool have_stat = sfd >= 0 && !fstat(sfd, &sbuf);
+            if (!have_stat || !S_ISSOCK(sbuf.st_mode)) {
+                int e = errno;
+                bool link = have_stat ? S_ISLNK(sbuf.st_mode) : e == ELOOP;
+                if (sfd >= 0) {
+                    close(sfd);
+                }
+                if (link) {
+                    xsink->raiseException("FILESYSTEM-ACCESS-DENIED", "Access to '%s' denied: the path changed while "
+                        "it was checked", path);
+                } else if (have_stat) {
+                    xsink->raiseException("DBI:MYSQL:CONNECT-ERROR", "'%s' is not a UNIX socket", path);
+                } else {
+                    xsink->raiseErrnoException("DBI:MYSQL:CONNECT-ERROR", e, "cannot connect to the UNIX socket "
+                        "'%s'", path);
+                }
+                mysql_close(db);
+                db = nullptr;
+                return -1;
+            }
+            fd_path = "/proc/self/fd/" + std::to_string(sfd);
+            path = fd_path.c_str();
+        }
+        // the descriptor is closed once the connection is made (or has failed)
+        struct FdCloser {
+            int fd;
+            ~FdCloser() {
+                if (fd >= 0) {
+                    close(fd);
+                }
+            }
+        } sfd_closer{sfd};
+#endif
+        if (mysql_connect_cancellable(db, ds, "localhost", 0, path, xsink)) {
             return 0;
         }
     } else {
