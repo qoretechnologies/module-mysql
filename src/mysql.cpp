@@ -489,16 +489,17 @@ static int mysql_connect_checked(MYSQL*& db, Datasource* ds, const QoreListNode*
         if (qore_dbi_pinned_path_dirfd(pin.get()) != AT_FDCWD) {
             sfd = qore_dbi_pinned_path_open(pin.get(), nullptr, O_PATH, 0);
             struct stat sbuf;
-            if (sfd < 0 || fstat(sfd, &sbuf) || !S_ISSOCK(sbuf.st_mode)) {
+            bool have_stat = sfd >= 0 && !fstat(sfd, &sbuf);
+            if (!have_stat || !S_ISSOCK(sbuf.st_mode)) {
                 int e = errno;
-                bool link = sfd >= 0 ? S_ISLNK(sbuf.st_mode) : e == ELOOP;
+                bool link = have_stat ? S_ISLNK(sbuf.st_mode) : e == ELOOP;
                 if (sfd >= 0) {
                     close(sfd);
                 }
                 if (link) {
                     xsink->raiseException("FILESYSTEM-ACCESS-DENIED", "Access to '%s' denied: the path changed while "
                         "it was checked", path);
-                } else if (sfd >= 0) {
+                } else if (have_stat) {
                     xsink->raiseException("DBI:MYSQL:CONNECT-ERROR", "'%s' is not a UNIX socket", path);
                 } else {
                     xsink->raiseErrnoException("DBI:MYSQL:CONNECT-ERROR", e, "cannot connect to the UNIX socket "
